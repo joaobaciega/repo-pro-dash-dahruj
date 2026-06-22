@@ -32,7 +32,8 @@ from sqlalchemy.engine import URL
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "0211")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "0211" \
+"")
 DB_NAME = os.getenv("DB_NAME", "dashboard_dahruj")
 
 EXCEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "C:/Users/Iasmin Baciega/OneDrive/Documents/DASH DAHRUJ/MySQL Dahurj/Ranking Dahruj Trimestre 2026.xlsx"
@@ -147,27 +148,19 @@ def seed(df, engine):
         cons_ids = {(r["nome"], r["unidade_id"]): r["id"]
                     for r in conn.execute(text("SELECT id, nome, unidade_id FROM consultores")).mappings()}
 
-        # 4) lancamentos (mensal -> semanal) ----------------------------------
-        #    Cada linha mensal é distribuída pelas semanas (segundas) do mês.
-        #    Os totais do mês ficam idênticos; ganha-se a granularidade semanal.
+       # 4) lancamentos ------------------------------------------------------
         recs = []
         for _, r in df.iterrows():
             uid = uni_ids[(r["Marca"], r["Loja"])]
             cid = cons_ids[(r["Consultor"], uid)]
-            semanas = segundas_do_mes(r["Mes"])
-            n = len(semanas)
-            tem_pass = not pd.isna(r["Passagens"])
-            pas = dividir_inteiro(r["Passagens"], n) if tem_pass else [None] * n
-            rd = dividir_inteiro(r["RD"], n)
-            rt = dividir_inteiro(r["RT"], n)
-            for i, sem in enumerate(semanas):
-                recs.append({
-                    "consultor_id": cid, "semana": sem, "passagens": pas[i],
-                    "refil_diant": rd[i], "refil_tras": rt[i],
-                })
+            passagens = None if pd.isna(r["Passagens"]) else int(r["Passagens"])
+            recs.append({
+                "consultor_id": cid, "mes": r["Mes"], "passagens": passagens,
+                "refil_diant": int(r["RD"]), "refil_tras": int(r["RT"]),
+            })
         conn.execute(text("""
-            INSERT INTO lancamentos (consultor_id, semana, passagens, refil_diant, refil_tras)
-            VALUES (:consultor_id, :semana, :passagens, :refil_diant, :refil_tras)
+            INSERT INTO lancamentos (consultor_id, mes, passagens, refil_diant, refil_tras)
+            VALUES (:consultor_id, :mes, :passagens, :refil_diant, :refil_tras)
             ON DUPLICATE KEY UPDATE
               passagens   = VALUES(passagens),
               refil_diant = VALUES(refil_diant),

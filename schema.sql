@@ -45,6 +45,7 @@ CREATE TABLE unidades (
   marca          VARCHAR(50)  NOT NULL,
   loja           VARCHAR(80)  NOT NULL,
   nome_exibicao  VARCHAR(120) NOT NULL,
+  gerente        VARCHAR(120) NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_unidade (marca, loja),
   CONSTRAINT fk_unidade_marca
@@ -70,11 +71,12 @@ CREATE TABLE consultores (
 
 -- -----------------------------------------------------------------------------
 -- 4) lancamentos  (TABELA-FATO)
---    O que o gerente digita por consultor e por mês: Passagens, Refil Dianteiro
---    e Refil Traseiro. `mes` é sempre o 1º dia do mês de referência.
---    A chave única (consultor_id, mes) viabiliza o UPSERT: relançar o mesmo
---    consultor/mês ATUALIZA o registro em vez de duplicar.
---    passagens é NULL quando não informado (ex.: dados de Fevereiro).
+--    O que o gerente digita por consultor e por SEMANA: Passagens, Refil
+--    Dianteiro e Refil Traseiro. `semana` é sempre a SEGUNDA-FEIRA da semana
+--    de referência (início da semana).
+--    A chave única (consultor_id, semana) viabiliza o UPSERT: relançar o mesmo
+--    consultor/semana ATUALIZA o registro em vez de duplicar.
+--    O dashboard agrega as semanas por mês; o relatório semanal usa a semana.
 -- -----------------------------------------------------------------------------
 CREATE TABLE lancamentos (
   id           INT       NOT NULL AUTO_INCREMENT,
@@ -117,6 +119,7 @@ SELECT
   u.nome_exibicao                          AS unidade,
   u.loja                                   AS loja,
   u.marca                                  AS marca,
+  u.gerente                                AS gerente,
   l.mes                                    AS mes,
   DATE_FORMAT(l.mes, '%m/%Y')              AS mes_label,
   l.passagens                              AS passagens,
@@ -134,3 +137,4 @@ FROM lancamentos l
 JOIN consultores  c ON c.id    = l.consultor_id
 JOIN unidades     u ON u.id    = c.unidade_id
 JOIN precos_marca p ON p.marca = u.marca;
+

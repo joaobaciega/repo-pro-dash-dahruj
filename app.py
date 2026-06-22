@@ -393,7 +393,7 @@ def pagina_dashboard():
           "Aproveitamento": ("aproveitamento", "pct")}
     colr1, colr2 = st.columns([2, 1])
     metrica = colr1.selectbox("Ordenar por", list(rk.keys()))
-    topn = colr2.slider("Quantos exibir", 5, 30, 15)
+    topn = colr2.slider("Quantos exibir", 5, 65, 15)
     ycol, kind = rk[metrica]
     rank = agg_by(f, "consultor").sort_values(ycol, ascending=False).head(topn).sort_values(ycol)
     if kind == "money":
@@ -433,22 +433,23 @@ def pagina_dashboard():
 
 
 # ============================ PÁGINA: LANÇAMENTO ============================
-def segunda_da_semana(d):
-    """Segunda-feira da semana que contém a data d."""
-    return d - dt.timedelta(days=d.weekday())
+def meses_recentes(n=6):
+    """Últimos n meses (1º dia de cada), do atual para trás."""
+    hoje = dt.date.today().replace(day=1)
+    y, m, out = hoje.year, hoje.month, []
+    for _ in range(n):
+        out.append(dt.date(y, m, 1))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return out
 
 
-def semanas_recentes(n=10):
-    """Últimas n semanas (segundas-feiras), da atual para trás."""
-    seg = segunda_da_semana(dt.date.today())
-    return [seg - dt.timedelta(weeks=i) for i in range(n)]
-
-
-def label_semana(seg):
-    """Rótulo amigável da semana a partir da segunda-feira (ex.: '09/06 a 15/06/2026')."""
-    seg = pd.Timestamp(seg).date() if not isinstance(seg, dt.date) else seg
-    fim = seg + dt.timedelta(days=6)
-    return f"{seg.strftime('%d/%m')} a {fim.strftime('%d/%m/%Y')}"
+def label_mes(d):
+    """Rótulo do mês (ex.: 'Junho/2026')."""
+    nomes = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+             "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    return f"{nomes[d.month]}/{d.year}"
 
 
 def pagina_lancamento():
@@ -472,20 +473,20 @@ def pagina_lancamento():
     nome_cons = st.selectbox("Consultor", list(cons_por_nome.keys()))
     cons = cons_por_nome[nome_cons]
 
-    semanas = semanas_recentes(10)
-    sem_por_label = {label_semana(d): d for d in semanas}
-    label_sel = st.selectbox("Semana de referência", list(sem_por_label.keys()))
-    semana = sem_por_label[label_sel]
+    meses = meses_recentes(6)
+    mes_por_label = {label_mes(d): d for d in meses}
+    label_sel = st.selectbox("Mês de referência", list(mes_por_label.keys()))
+    mes = mes_por_label[label_sel]
 
-    existente = db.obter_lancamento(cons["id"], semana)
+    existente = db.obter_lancamento(cons["id"], mes)
     if existente:
-        st.info(f"Já existe lançamento para **{nome_cons}** na semana **{label_sel}**. "
+        st.info(f"Já existe lançamento para **{nome_cons}** em **{label_sel}**. "
                 "Os valores abaixo estão preenchidos e serão atualizados ao salvar.")
     def_pass = int(existente["passagens"]) if existente and existente["passagens"] is not None else 0
     def_rd = int(existente["refil_diant"]) if existente else 0
     def_rt = int(existente["refil_tras"]) if existente else 0
 
-    chave = f"{cons['id']}_{semana.isoformat()}"
+    chave = f"{cons['id']}_{mes.isoformat()}"
     st.divider()
     c1, c2, c3 = st.columns(3)
     passagens = c1.number_input("Passagens", min_value=0, step=1, value=def_pass, key=f"pass_{chave}")
@@ -514,11 +515,11 @@ def pagina_lancamento():
     st.divider()
     if st.button("Salvar lançamento", type="primary", use_container_width=True):
         try:
-            db.salvar_lancamento(cons["id"], semana, int(passagens), int(refil_d), int(refil_t))
+            db.salvar_lancamento(cons["id"], mes, int(passagens), int(refil_d), int(refil_t))
         except Exception:
             st.error("Não foi possível salvar agora. Verifique a conexão com o banco e tente de novo.")
         else:
-            st.success(f"Lançamento de **{nome_cons}** na semana **{label_sel}** salvo! "
+            st.success(f"Lançamento de **{nome_cons}** em **{label_sel}** salvo! "
                        f"Faturamento da semana: {fmt_money(tot_g)}.")
             st.toast("Dados gravados no banco.", icon="✅")
 
@@ -531,7 +532,7 @@ def pagina_lancamento():
             ok = st.checkbox("Confirmo que quero excluir", key=f"conf_{chave}")
             if st.button("Excluir lançamento", disabled=not ok, key=f"del_{chave}"):
                 try:
-                    db.excluir_lancamento(cons["id"], semana)
+                    db.excluir_lancamento(cons["id"], mes)
                 except Exception:
                     st.error("Não foi possível excluir agora. Verifique a conexão e tente de novo.")
                 else:
@@ -540,9 +541,9 @@ def pagina_lancamento():
 
 
 # ======================= PÁGINA: RELATÓRIO SEMANAL =======================
-def _relatorio_semana(df, semana_sel):
-    """Monta o ranking por gerente/unidade de uma semana + a linha de totais."""
-    sem = df[df["semana"] == semana_sel].copy()
+def _relatorio_semana(df, mes_sel):
+    """Monta o ranking por gerente/unidade de um mês + a linha de totais."""
+    sem = df[df["mes"] == mes_sel].copy()
     sem["gerente"] = sem["gerente"].fillna("(sem gerente)")
     g = agg_by(sem, ["unidade", "gerente", "loja", "marca"])
     g["aprov_d"] = (g["refil_diant"] / g["passagens"]).where(g["passagens"] > 0)
@@ -569,7 +570,7 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
         return None if (isinstance(x, float) and pd.isna(x)) else x
 
     wb = Workbook(); ws = wb.active; ws.title = "Relatório Semanal"
-    ws.cell(1, 1, f"Resultado DAHRUJ — Semana {semana_lbl}").font = \
+    ws.cell(1, 1, f"Resultado DAHRUJ {semana_lbl}").font = \
         Font(name="Arial", bold=True, size=13, color=NAVY)
     ws.cell(2, 1, f"Ordenado por {ordenar} · Gerado em "
                   f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')}").font = \
@@ -619,28 +620,28 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
 
 
 def pagina_relatorio_semanal():
-    st.title("📅 Relatório Semanal por Gerente")
-    st.caption("Ranking das unidades em uma semana, no formato do relatório da diretoria.")
+    st.title("📅 Relatório por Gerente")
+    st.caption("Ranking das unidades no mês, no formato do relatório da diretoria.")
     try:
         df = db.ler_base_tidy()
     except Exception:
         st.error("Não foi possível conectar ao banco de dados no momento. "
                  "Verifique se o MySQL está ativo e tente novamente.")
         return
-    if df.empty or df["semana"].dropna().empty:
-        st.info("Ainda não há lançamentos semanais no banco.")
+    if df.empty or df["mes"].dropna().empty:
+        st.info("Ainda não há lançamentos no banco.")
         return
 
-    semanas = sorted(df["semana"].dropna().unique(), reverse=True)
-    sem_por_label = {label_semana(pd.Timestamp(s).date()): s for s in semanas}
+    meses = sorted(df["mes"].dropna().unique(), reverse=True)
+    mes_por_label = {label_mes(pd.Timestamp(s).date()): s for s in meses}
     c1, c2 = st.columns([2, 1])
-    label_sel = c1.selectbox("Semana", list(sem_por_label.keys()))
+    label_sel = c1.selectbox("Mês", list(mes_por_label.keys()))
     ordenar = c2.radio("Ordenar por", ["Faturamento", "Aproveitamento"], horizontal=True)
-    semana_sel = sem_por_label[label_sel]
+    mes_sel = mes_por_label[label_sel]
 
-    g, ov = _relatorio_semana(df, semana_sel)
+    g, ov = _relatorio_semana(df, mes_sel)
     if g.empty:
-        st.warning("Sem dados nesta semana.")
+        st.warning("Sem dados neste mês.")
         return
     ordcol = "total_geral" if ordenar == "Faturamento" else "aprov_d"
     g = g.sort_values(ordcol, ascending=False).reset_index(drop=True)
@@ -655,7 +656,7 @@ def pagina_relatorio_semanal():
     cexp.download_button(
         "📥 Exportar relatório (Excel)",
         data=gerar_excel_semanal(g, ov, label_sel, ordenar),
-        file_name=f"Relatorio_Semanal_Dahruj_{pd.Timestamp(semana_sel).date().isoformat()}.xlsx",
+        file_name=f"Relatorio_Semanal_Dahruj_{pd.Timestamp(mes_sel).date().isoformat()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
@@ -663,7 +664,7 @@ def pagina_relatorio_semanal():
     linhas = []
     for i, (_, r) in enumerate(g.iterrows(), 1):
         linhas.append({
-            "Seq": i, "Gerente": r["gerente"], "Marca": r["marca"], "Loja": r["loja"],
+            "Seq": str(i), "Gerente": r["gerente"], "Marca": r["marca"], "Loja": r["loja"],
             "Passagens": fmt_int(r["passagens"]), "Refil Diant.": fmt_int(r["refil_diant"]),
             "% Aprov (D)": fmt_pct(r["aprov_d"]), "Total Diant.": fmt_money(r["total_diant"]),
             "Refil Tras.": fmt_int(r["refil_tras"]), "% Aprov (T)": fmt_pct(r["aprov_t"]),
@@ -684,7 +685,7 @@ def pagina_relatorio_semanal():
 
 # ============================ NAVEGAÇÃO ============================
 st.sidebar.title("Dahruj")
-pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Semanal"])
+pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Por Gerente"])
 st.sidebar.divider()
 
 if pagina == "Dashboard":
