@@ -2,9 +2,9 @@
 Fase 3 — Camada de dados (db.py)
 
 Centraliza a conexão com o MySQL e as funções de leitura/gravação usadas pelo
-app Streamlit. O app nunca escreve SQL direto: chama estas funções.
+app Streamlit (Fases 4 e 5). O app nunca escreve SQL direto: chama estas funções.
 
-Configuração: arquivo .streamlit/secrets.toml (na mesma pasta), com:
+Configuração: crie o arquivo .streamlit/secrets.toml com:
 
     [mysql]
     host = "127.0.0.1"
@@ -13,7 +13,7 @@ Configuração: arquivo .streamlit/secrets.toml (na mesma pasta), com:
     password = "suasenha"
     database = "dashboard_dahruj"
 
-Para testar a conexão isoladamente, rode na pasta do projeto:
+Para testar a conexão isoladamente (fora do Streamlit), rode na pasta do projeto:
     python db.py
 """
 
@@ -45,24 +45,14 @@ def get_engine():
 # ------------------------------- Leituras -------------------------------
 @st.cache_data(ttl=60)
 def listar_unidades():
-    """Unidades para o filtro do app (id, nome de exibição e preços da marca).
-    Os preços vêm junto para a tela calcular a prévia do faturamento."""
+    """Unidades para o filtro do app (id + nome de exibição)."""
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(text(
-            "SELECT u.id, u.nome_exibicao, u.marca, u.loja, u.gerente, "
-            "       p.preco_diant, p.preco_tras "
-            "FROM unidades u "
-            "JOIN precos_marca p ON p.marca = u.marca "
-            "ORDER BY u.nome_exibicao"
+            "SELECT id, nome_exibicao, marca, loja "
+            "FROM unidades ORDER BY nome_exibicao"
         )).mappings().all()
-    saida = []
-    for r in rows:
-        d = dict(r)
-        d["preco_diant"] = float(d["preco_diant"])
-        d["preco_tras"] = float(d["preco_tras"])
-        saida.append(d)
-    return saida
+    return [dict(r) for r in rows]
 
 
 @st.cache_data(ttl=60)
@@ -84,64 +74,45 @@ def ler_base_tidy():
     with eng.connect() as conn:
         df = pd.read_sql(text("SELECT * FROM vw_base_tidy"), conn)
     df["mes"] = pd.to_datetime(df["mes"])
-    df["semana"] = pd.to_datetime(df["semana"])
     return df
 
 
-def obter_lancamento(consultor_id, semana):
-    """Valores já lançados para (consultor, semana), ou None se não existir.
+def obter_lancamento(consultor_id, mes):
+    """Valores já lançados para (consultor, mês), ou None se ainda não existir.
     Útil para pré-preencher o formulário e permitir edição."""
     eng = get_engine()
     with eng.connect() as conn:
         row = conn.execute(text(
             "SELECT passagens, refil_diant, refil_tras "
-            "FROM lancamentos WHERE consultor_id = :cid AND semana = :semana"
-        ), {"cid": consultor_id, "semana": semana}).mappings().first()
+            "FROM lancamentos WHERE consultor_id = :cid AND mes = :mes"
+        ), {"cid": consultor_id, "mes": mes}).mappings().first()
     return dict(row) if row else None
 
 
 # ------------------------------- Gravação -------------------------------
-def salvar_lancamento(consultor_id, semana, passagens, refil_diant, refil_tras):
-    """Insere ou ATUALIZA (upsert) o lançamento de um consultor numa semana.
+def salvar_lancamento(consultor_id, mes, passagens, refil_diant, refil_tras):
+    """Insere ou ATUALIZA (upsert) o lançamento de um consultor num mês.
     Após gravar, limpa o cache de leitura para o dashboard refletir na hora."""
     eng = get_engine()
     with eng.begin() as conn:
         conn.execute(text("""
             INSERT INTO lancamentos
-                (consultor_id, semana, passagens, refil_diant, refil_tras)
-            VALUES (:cid, :semana, :passagens, :rd, :rt)
+                (consultor_id, mes, passagens, refil_diant, refil_tras)
+            VALUES (:cid, :mes, :passagens, :rd, :rt)
             ON DUPLICATE KEY UPDATE
                 passagens   = VALUES(passagens),
                 refil_diant = VALUES(refil_diant),
                 refil_tras  = VALUES(refil_tras)
-        """), {"cid": consultor_id, "semana": semana, "passagens": passagens,
+        """), {"cid": consultor_id, "mes": mes, "passagens": passagens,
                "rd": refil_diant, "rt": refil_tras})
     ler_base_tidy.clear()  # invalida o cache para o dashboard atualizar na hora
 
 
-def excluir_lancamento(consultor_id, semana):
-    """Remove o lançamento de um consultor numa semana (linha inserida por engano).
-    Após excluir, limpa o cache de leitura para o dashboard refletir na hora."""
-    eng = get_engine()
-    with eng.begin() as conn:
-        conn.execute(text(
-            "DELETE FROM lancamentos WHERE consultor_id = :cid AND semana = :semana"
-        ), {"cid": consultor_id, "semana": semana})
-    ler_base_tidy.clear()
-
-
 # -------------------- Teste de conexão standalone --------------------
-# Permite verificar a conexão com `python db.py`, sem precisar do app.
+# Permite verificar a Fase 3 com `python db.py`, sem precisar do app.
 if __name__ == "__main__":
     import tomllib
-    from pathlib import Path
-    cfg_path = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
-    if not cfg_path.exists():
-        raise SystemExit(
-            f"Não encontrei {cfg_path}.\n"
-            "Crie a pasta .streamlit (na mesma pasta do db.py) com o secrets.toml."
-        )
-    with open(cfg_path, "rb") as f:
+    with open(".streamlit/secrets.toml", "rb") as f:
         cfg = tomllib.load(f)["mysql"]
     eng = create_engine(_build_url(cfg), pool_pre_ping=True)
     print("--- Teste de conexão (db.py) ---")
