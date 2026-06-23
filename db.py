@@ -45,14 +45,24 @@ def get_engine():
 # ------------------------------- Leituras -------------------------------
 @st.cache_data(ttl=60)
 def listar_unidades():
-    """Unidades para o filtro do app (id + nome de exibição)."""
+    """Unidades para o filtro do app (id, nome de exibição e preços da marca).
+    Os preços vêm junto para a tela calcular a prévia do faturamento."""
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(text(
-            "SELECT id, nome_exibicao, marca, loja "
-            "FROM unidades ORDER BY nome_exibicao"
+            "SELECT u.id, u.nome_exibicao, u.marca, u.loja, u.gerente, "
+            "       p.preco_diant, p.preco_tras "
+            "FROM unidades u "
+            "JOIN precos_marca p ON p.marca = u.marca "
+            "ORDER BY u.nome_exibicao"
         )).mappings().all()
-    return [dict(r) for r in rows]
+    saida = []
+    for r in rows:
+        d = dict(r)
+        d["preco_diant"] = float(d["preco_diant"])
+        d["preco_tras"] = float(d["preco_tras"])
+        saida.append(d)
+    return saida
 
 
 @st.cache_data(ttl=60)
