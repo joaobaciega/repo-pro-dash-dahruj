@@ -14,6 +14,7 @@ Como rodar (na pasta do projeto, com .streamlit/secrets.toml configurado):
 
 import datetime as dt
 import io
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -26,10 +27,66 @@ st.set_page_config(page_title="Dahruj — Refis para Palhetas",
                    page_icon="📊", layout="wide")
 
 N_MESES = 3
-PALETTE = ["#1F3864", "#2E75B6", "#E8A33D", "#70AD47", "#C0504D",
-           "#7030A0", "#00B0A0", "#ED7D31", "#A5A5A5", "#264478"]
+# Identidade visual: PRETO / LARANJA / BRANCO (proporção 60/30/10).
+ORANGE = "#EB5E33"          # laranja da marca — cor de acento forte (30%)
+ORANGE_ESC = "#B5451F"      # laranja escuro (variação para séries)
+PRETO = "#0D0D0D"           # fundo dominante (60%)
+BRANCO = "#F5F5F5"          # texto/acento claro (10%)
+ASSETS = Path(__file__).resolve().parent / "assets"
+# Paleta dos gráficos: laranja em primeiro plano, com tons e branco/cinzas para
+# diferenciar séries mantendo a leitura limpa sobre fundo preto.
+PALETTE = ["#EB5E33", "#F5A623", "#FF8A5B", "#F58220", "#FFFFFF",
+           "#C0C0C0", "#B5451F", "#8A8A8A", "#FFB07C", "#E0E0E0"]
 MESES_PT = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
             "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
+
+# --------------------------- Identidade visual ---------------------------
+def _injetar_css():
+    """Aplica a identidade PRETO/LARANJA/BRANCO (60/30/10) sobre o tema escuro."""
+    st.markdown(f"""
+        <style>
+        /* Títulos e cabeçalhos em laranja (acento de marca) */
+        h1, h2, h3 {{ color: {ORANGE} !important; }}
+        /* Cartões de KPI: fundo escuro com acento laranja à esquerda */
+        div[data-testid="stMetric"] {{
+            background: #1A1A1A; border-left: 5px solid {ORANGE};
+            border-radius: 8px; padding: 14px 16px; }}
+        div[data-testid="stMetricValue"] {{ color: {BRANCO}; }}
+        /* Sidebar mais escura, com borda laranja sutil */
+        section[data-testid="stSidebar"] {{
+            background: #0A0A0A; border-right: 1px solid rgba(235,94,51,.35); }}
+        /* Divisores em laranja translúcido */
+        hr {{ border-color: rgba(235,94,51,.45) !important; }}
+        /* Item de menu (radio) selecionado destacado em laranja */
+        section[data-testid="stSidebar"] label[data-baseweb="radio"]:has(input:checked) {{
+            color: {ORANGE}; font-weight: 700; }}
+        </style>
+    """, unsafe_allow_html=True)
+
+
+def _achar_logo():
+    for ext in ("png", "jpg", "jpeg", "webp", "gif"):
+        p = ASSETS / f"logo.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def mostrar_logo():
+    """Exibe a logo grande no topo da barra lateral — canto superior esquerdo,
+    presente em todas as páginas. Sem arquivo, cai para o texto 'DAHRUJ'.
+    """
+    logo = _achar_logo()
+    if logo:
+        st.sidebar.image(str(logo), width="stretch")
+    else:
+        st.sidebar.markdown(
+            f'<div style="font-family:\'Arial Black\',Arial,sans-serif;'
+            f'font-weight:900;font-size:30px;letter-spacing:2px;color:{ORANGE};'
+            f'border:3px solid {ORANGE};border-radius:8px;padding:2px 12px;'
+            f'display:inline-block;margin-bottom:6px;">DAHRUJ</div>',
+            unsafe_allow_html=True)
 
 
 # --------------------------- Formatação BR ---------------------------
@@ -319,9 +376,11 @@ def pagina_dashboard():
                       color_discrete_sequence=PALETTE,
                       category_orders={"mes_lbl": ordem_meses})
         fig.update_traces(hovertemplate="%{x}<br>" + fmt + "<extra>%{fullData.name}</extra>")
-        fig.update_layout(title=titulo, template="plotly_white", height=300,
+        fig.update_layout(title=titulo, template="plotly_dark", height=300,
                           margin=dict(l=10, r=10, t=50, b=10),
                           xaxis_title=None, yaxis_title=None,
+                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                          font_color=BRANCO,
                           legend=dict(orientation="h", y=-0.2, title=None))
         # Piso do eixo Y por métrica (em vez de começar no zero): dá zoom o
         # suficiente para ver a variação, sem exagerar as quedas. O piso só vale
@@ -375,11 +434,13 @@ def pagina_dashboard():
         st.caption("Sem dados suficientes no período para montar este gráfico.")
     else:
         figu = px.bar(apu, x=xcol, y="unidade", orientation="h",
-                      color_discrete_sequence=[PALETTE[3]], text=txt)
+                      color_discrete_sequence=[ORANGE], text=txt)
         figu.update_traces(hovertemplate=htmpl, textposition="outside", cliponaxis=False)
-        figu.update_layout(template="plotly_white", height=max(320, 28 * len(apu)),
+        figu.update_layout(template="plotly_dark", height=max(320, 28 * len(apu)),
                            margin=dict(l=10, r=60, t=20, b=10),
-                           xaxis_title=ord_uni, yaxis_title=None)
+                           xaxis_title=ord_uni, yaxis_title=None,
+                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           font_color=BRANCO)
         if xfmt:
             figu.update_xaxes(tickformat=xfmt)
         st.plotly_chart(figu, use_container_width=True)
@@ -403,11 +464,13 @@ def pagina_dashboard():
     else:
         txt = rank[ycol].map(fmt_int); htmpl = "%{x:,.0f}<extra></extra>"; xfmt = None
     figr = px.bar(rank, x=ycol, y="consultor", orientation="h",
-                  color_discrete_sequence=[PALETTE[1]], text=txt)
+                  color_discrete_sequence=[ORANGE], text=txt)
     figr.update_traces(hovertemplate=htmpl, textposition="outside", cliponaxis=False)
-    figr.update_layout(template="plotly_white", height=max(340, 26 * len(rank)),
+    figr.update_layout(template="plotly_dark", height=max(340, 26 * len(rank)),
                        margin=dict(l=10, r=40, t=20, b=10),
-                       xaxis_title=metrica, yaxis_title=None)
+                       xaxis_title=metrica, yaxis_title=None,
+                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                       font_color=BRANCO)
     if xfmt:
         figr.update_xaxes(tickformat=xfmt)
     st.plotly_chart(figr, use_container_width=True)
@@ -684,6 +747,8 @@ def pagina_relatorio_semanal():
 
 
 # ============================ NAVEGAÇÃO ============================
+_injetar_css()
+mostrar_logo()
 st.sidebar.title("Dahruj")
 pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Por Gerente"])
 st.sidebar.divider()
