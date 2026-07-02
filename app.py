@@ -765,7 +765,7 @@ def pagina_relatorio_semanal():
 
 # ===================== PÁGINA: RELATÓRIO POR CONSULTOR =====================
 # Verba paga ao consultor por refil vendido (R$ por unidade).
-VERBA_DIANT, VERBA_TRAS = 26, 15
+VERBA_DIANT, VERBA_TRAS = 10, 5
 
 
 def _relatorio_consultor(df, mes_sel):
@@ -865,11 +865,19 @@ def pagina_relatorio_consultor():
 
     meses = sorted(df["mes"].dropna().unique(), reverse=True)
     mes_por_label = {label_mes(pd.Timestamp(s).date()): s for s in meses}
-    c1, c2 = st.columns([2, 1])
+    TODAS = "Todas as unidades"
+    unidades = [TODAS] + sorted(df["unidade"].dropna().unique())
+    c1, c2, c3 = st.columns([2, 2, 1])
     label_sel = c1.selectbox("Mês", list(mes_por_label.keys()))
-    ordenar = c2.radio("Ordenar por", ["Faturamento", "Aproveitamento"], horizontal=True)
+    unidade_sel = c2.selectbox("Unidade", unidades)
+    ordenar = c3.radio("Ordenar por", ["Faturamento", "Aproveitamento"], horizontal=True)
     mes_sel = mes_por_label[label_sel]
 
+    if unidade_sel != TODAS:
+        df = df[df["unidade"] == unidade_sel]
+    if df[df["mes"] == mes_sel].empty:
+        st.warning("Sem dados para esta unidade neste mês.")
+        return
     g, ov = _relatorio_consultor(df, mes_sel)
     if g.empty:
         st.warning("Sem dados neste mês.")
