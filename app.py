@@ -763,16 +763,171 @@ def pagina_relatorio_semanal():
     st.caption("Part % = participação da unidade no faturamento total da semana.")
 
 
+# ===================== PÁGINA: RELATÓRIO POR CONSULTOR =====================
+# Verba paga ao consultor por refil vendido (R$ por unidade).
+VERBA_DIANT, VERBA_TRAS = 26, 15
+
+
+def _relatorio_consultor(df, mes_sel):
+    """Monta o ranking por consultor/unidade de um mês + a linha de totais."""
+    sem = df[df["mes"] == mes_sel].copy()
+    g = agg_by(sem, ["consultor", "unidade"])
+    g["aprov_d"] = (g["refil_diant"] / g["passagens"]).where(g["passagens"] > 0)
+    g["aprov_t"] = (g["refil_tras"] / g["passagens"]).where(g["passagens"] > 0)
+    tot_fat = g["total_geral"].sum()
+    g["part"] = (g["total_geral"] / tot_fat) if tot_fat else 0.0
+    g["verba"] = g["refil_diant"] * VERBA_DIANT + g["refil_tras"] * VERBA_TRAS
+    ov = agg_by(sem.assign(_g=1), "_g").iloc[0].to_dict()
+    p = ov["passagens"]
+    ov["aprov_d"] = (ov["refil_diant"] / p) if (p and p > 0) else None
+    ov["aprov_t"] = (ov["refil_tras"] / p) if (p and p > 0) else None
+    ov["verba"] = ov["refil_diant"] * VERBA_DIANT + ov["refil_tras"] * VERBA_TRAS
+    return g, ov
+
+
+def gerar_excel_consultor(g, ov, mes_lbl, ordenar):
+    """Exporta o relatório mensal por consultor em Excel formatado."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    NAVY, WHITE = "FF1F3864", "FFFFFFFF"
+    thin = Side(style="thin", color="FFD9D9D9")
+    BD = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def _v(x):
+        return None if (isinstance(x, float) and pd.isna(x)) else x
+
+    wb = Workbook(); ws = wb.active; ws.title = "Relatório Consultor"
+    ws.cell(1, 1, f"Resultado por Consultor DAHRUJ {mes_lbl}").font = \
+        Font(name="Arial", bold=True, size=13, color=NAVY)
+    ws.cell(2, 1, f"Ordenado por {ordenar} · Gerado em "
+                  f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')}").font = \
+        Font(name="Arial", size=9, color="FF666666")
+    head = ["Seq", "Consultor", "Unidade", "Passagens", "Refil Diant.", "% Aprov",
+            "Total Diant.", "Refil Tras.", "% Aprov", "Total Tras.", "Total Geral",
+            "Part %", "Verba"]
+    COL_INT, COL_PCT, COL_MONEY = (4, 5, 8), (6, 9, 12), (7, 10, 11, 13)
+    H = 4
+    for j, h in enumerate(head, 1):
+        c = ws.cell(H, j, h); c.font = Font(name="Arial", bold=True, color=WHITE, size=10)
+        c.fill = PatternFill("solid", fgColor=NAVY); c.border = BD
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for i, (_, r) in enumerate(g.iterrows()):
+        rr = H + 1 + i
+        vals = [i + 1, r["consultor"], r["unidade"], r["passagens"], r["refil_diant"],
+                r["aprov_d"], r["total_diant"], r["refil_tras"], r["aprov_t"],
+                r["total_tras"], r["total_geral"], r["part"], r["verba"]]
+        for j, v in enumerate(vals, 1):
+            c = ws.cell(rr, j, _v(v)); c.font = Font(name="Arial", size=10); c.border = BD
+            if j == 1 or j in COL_INT or j in COL_PCT:
+                c.alignment = Alignment(horizontal="center")
+            if j in COL_INT:
+                c.number_format = "#,##0"
+            elif j in COL_PCT:
+                c.number_format = "0.0%"
+            elif j in COL_MONEY:
+                c.number_format = "R$ #,##0.00"
+        if i % 2 == 1:
+            for j in range(1, len(head) + 1):
+                ws.cell(rr, j).fill = PatternFill("solid", fgColor="FFF4F6FA")
+    tr = H + 1 + len(g)
+    ws.cell(tr, 2, "TOTAL").font = Font(name="Arial", bold=True, size=10)
+    tvals = {4: _v(ov["passagens"]), 5: _v(ov["refil_diant"]), 6: _v(ov["aprov_d"]),
+             7: _v(ov["total_diant"]), 8: _v(ov["refil_tras"]), 9: _v(ov["aprov_t"]),
+             10: _v(ov["total_tras"]), 11: _v(ov["total_geral"]), 12: 1.0,
+             13: _v(ov["verba"])}
+    for j, v in tvals.items():
+        c = ws.cell(tr, j, v); c.font = Font(name="Arial", bold=True, size=10); c.border = BD
+        if j in COL_INT:
+            c.number_format = "#,##0"; c.alignment = Alignment(horizontal="center")
+        elif j in COL_PCT:
+            c.number_format = "0.0%"; c.alignment = Alignment(horizontal="center")
+        elif j in COL_MONEY:
+            c.number_format = "R$ #,##0.00"
+    for j, w in enumerate([5, 22, 20, 11, 12, 9, 13, 11, 9, 13, 14, 8, 12], 1):
+        ws.column_dimensions[get_column_letter(j)].width = w
+    ws.freeze_panes = f"A{H + 1}"
+    buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+
+def pagina_relatorio_consultor():
+    st.title("🧑‍💼 Relatório por Consultor")
+    st.caption("Ranking dos consultores no mês, com a verba de cada um.")
+    try:
+        df = db.ler_base_tidy()
+    except Exception:
+        st.error("Não foi possível conectar ao banco de dados no momento. "
+                 "Verifique se o MySQL está ativo e tente novamente.")
+        return
+    if df.empty or df["mes"].dropna().empty:
+        st.info("Ainda não há lançamentos no banco.")
+        return
+
+    meses = sorted(df["mes"].dropna().unique(), reverse=True)
+    mes_por_label = {label_mes(pd.Timestamp(s).date()): s for s in meses}
+    c1, c2 = st.columns([2, 1])
+    label_sel = c1.selectbox("Mês", list(mes_por_label.keys()))
+    ordenar = c2.radio("Ordenar por", ["Faturamento", "Aproveitamento"], horizontal=True)
+    mes_sel = mes_por_label[label_sel]
+
+    g, ov = _relatorio_consultor(df, mes_sel)
+    if g.empty:
+        st.warning("Sem dados neste mês.")
+        return
+    ordcol = "total_geral" if ordenar == "Faturamento" else "aprov_d"
+    g = g.sort_values(ordcol, ascending=False).reset_index(drop=True)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Passagens", fmt_int(ov["passagens"]))
+    k2.metric("Refil Diant.", fmt_int(ov["refil_diant"]))
+    k3.metric("Aproveitamento", fmt_pct(ov["aprov_d"]))
+    k4.metric("Faturamento total", fmt_money(ov["total_geral"]))
+
+    _, cexp = st.columns([3, 1])
+    cexp.download_button(
+        "📥 Exportar relatório (Excel)",
+        data=gerar_excel_consultor(g, ov, label_sel, ordenar),
+        file_name=f"Relatorio_Consultor_Dahruj_{pd.Timestamp(mes_sel).date().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+    linhas = []
+    for i, (_, r) in enumerate(g.iterrows(), 1):
+        linhas.append({
+            "Seq": str(i), "Consultor": r["consultor"], "Unidade": r["unidade"],
+            "Passagens": fmt_int(r["passagens"]), "Refil Diant.": fmt_int(r["refil_diant"]),
+            "% Aprov (D)": fmt_pct(r["aprov_d"]), "Total Diant.": fmt_money(r["total_diant"]),
+            "Refil Tras.": fmt_int(r["refil_tras"]), "% Aprov (T)": fmt_pct(r["aprov_t"]),
+            "Total Tras.": fmt_money(r["total_tras"]), "Total Geral": fmt_money(r["total_geral"]),
+            "Part %": fmt_pct(r["part"]), "Verba": fmt_money(r["verba"]),
+        })
+    linhas.append({
+        "Seq": "", "Consultor": "TOTAL", "Unidade": "",
+        "Passagens": fmt_int(ov["passagens"]), "Refil Diant.": fmt_int(ov["refil_diant"]),
+        "% Aprov (D)": fmt_pct(ov["aprov_d"]), "Total Diant.": fmt_money(ov["total_diant"]),
+        "Refil Tras.": fmt_int(ov["refil_tras"]), "% Aprov (T)": fmt_pct(ov["aprov_t"]),
+        "Total Tras.": fmt_money(ov["total_tras"]), "Total Geral": fmt_money(ov["total_geral"]),
+        "Part %": "100,0%", "Verba": fmt_money(ov["verba"]),
+    })
+    st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
+    st.caption(f"Verba = (Refil Diant. × R$ {VERBA_DIANT}) + (Refil Tras. × R$ {VERBA_TRAS}). "
+               "Part % = participação do consultor no faturamento total do mês.")
+
+
 # ============================ NAVEGAÇÃO ============================
 _injetar_css()
 mostrar_logo()
 st.sidebar.title("Dahruj")
-pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Por Gerente"])
+pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Por Gerente",
+                                   "Relatório Por Consultor"])
 st.sidebar.divider()
 
 if pagina == "Dashboard":
     pagina_dashboard()
 elif pagina == "Lançamento":
     pagina_lancamento()
-else:
+elif pagina == "Relatório Por Gerente":
     pagina_relatorio_semanal()
+else:
+    pagina_relatorio_consultor()
