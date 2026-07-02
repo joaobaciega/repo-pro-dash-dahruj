@@ -128,9 +128,15 @@ def mlabel(d):
 
 
 # --------------------------- Helpers de dados ---------------------------
-def last_n_months(df, n=N_MESES):
+def last_n_months(df, n=N_MESES, mes_fim=None):
+    """Janela dos n meses que TERMINAM em `mes_fim` (trimestre móvel). Sem
+    `mes_fim`, usa o mês mais recente da base."""
     meses = sorted(df["mes"].unique())
-    keep = meses[-n:]
+    if mes_fim is not None and mes_fim in meses:
+        idx = meses.index(mes_fim)
+        keep = meses[max(0, idx - n + 1): idx + 1]
+    else:
+        keep = meses[-n:]
     return df[df["mes"].isin(keep)].copy(), keep
 
 
@@ -278,7 +284,18 @@ def pagina_dashboard():
                 "esquerda) para inserir dados.")
         return
 
-    win, keep = last_n_months(df)
+    # ---- Seleção do mês de referência (menu suspenso) ----
+    meses_disp = sorted(df["mes"].dropna().unique())
+    lbl_to_mes = {mlabel(m): m for m in meses_disp}
+    labels_mes = [mlabel(m) for m in reversed(meses_disp)]  # mais recente primeiro
+    csel, _ = st.columns([2, 3])
+    mes_sel_lbl = csel.selectbox(
+        "📅 Mês de referência", labels_mes, index=0,
+        help="Escolha o mês para ver os KPIs. Os gráficos mostram o trimestre "
+             "móvel encerrado no mês selecionado.")
+    mes_sel = lbl_to_mes[mes_sel_lbl]
+
+    win, keep = last_n_months(df, mes_fim=mes_sel)
     ordem_meses = [mlabel(m) for m in sorted(keep)]
     periodo = " · ".join(ordem_meses)
     st.caption(f"Acompanhamento trimestral móvel · {periodo}")
@@ -344,17 +361,17 @@ def pagina_dashboard():
         return delta_str(atual[col] - ant[col], kind) if ant is not None else None
 
     r1 = st.columns(3)
-    r1[0].metric("Passagens (mês atual)", fmt_int(atual["passagens"]), d("passagens", "int"))
-    r1[1].metric("Nº Refil Diant. (mês atual)", fmt_int(atual["refil_diant"]),
+    r1[0].metric(f"Passagens ({mes_sel_lbl})", fmt_int(atual["passagens"]), d("passagens", "int"))
+    r1[1].metric(f"Nº Refil Diant. ({mes_sel_lbl})", fmt_int(atual["refil_diant"]),
                  d("refil_diant", "int"))
-    r1[2].metric("Aproveitamento Diant. (mês atual)", fmt_pct(atual["aproveitamento"]),
+    r1[2].metric(f"Aproveitamento Diant. ({mes_sel_lbl})", fmt_pct(atual["aproveitamento"]),
                  d("aproveitamento", "pp"))
     r2 = st.columns(3)
-    r2[0].metric("Faturamento total (mês atual)", fmt_money(atual["total_geral"]),
+    r2[0].metric(f"Faturamento total ({mes_sel_lbl})", fmt_money(atual["total_geral"]),
                  d("total_geral", "money"))
-    r2[1].metric("Nº Refil Tras. (mês atual)", fmt_int(atual["refil_tras"]),
+    r2[1].metric(f"Nº Refil Tras. ({mes_sel_lbl})", fmt_int(atual["refil_tras"]),
                  d("refil_tras", "int"))
-    r2[2].metric("Aproveitamento Tras. (mês atual)", fmt_pct(atual["aproveitamento_tras"]),
+    r2[2].metric(f"Aproveitamento Tras. ({mes_sel_lbl})", fmt_pct(atual["aproveitamento_tras"]),
                  d("aproveitamento_tras", "pp"))
     st.caption("Variação comparada ao mês imediatamente anterior dentro da janela.")
     st.divider()
@@ -541,7 +558,7 @@ def pagina_lancamento():
     label_sel = st.selectbox("Mês de referência", list(mes_por_label.keys()))
     mes = mes_por_label[label_sel]
 
-    existente = db.obter_lancamento(cons["id"], mes)
+    existente = db.obter_lancamento(cons["id"], mes, uni["id"])
     if existente:
         st.info(f"Já existe lançamento para **{nome_cons}** em **{label_sel}**. "
                 "Os valores abaixo estão preenchidos e serão atualizados ao salvar.")
@@ -578,7 +595,7 @@ def pagina_lancamento():
     st.divider()
     if st.button("Salvar lançamento", type="primary", use_container_width=True):
         try:
-            db.salvar_lancamento(cons["id"], mes, int(passagens), int(refil_d), int(refil_t))
+            db.salvar_lancamento(cons["id"], mes, uni["id"], int(passagens), int(refil_d), int(refil_t))
         except Exception:
             st.error("Não foi possível salvar agora. Verifique a conexão com o banco e tente de novo.")
         else:
@@ -595,7 +612,7 @@ def pagina_lancamento():
             ok = st.checkbox("Confirmo que quero excluir", key=f"conf_{chave}")
             if st.button("Excluir lançamento", disabled=not ok, key=f"del_{chave}"):
                 try:
-                    db.excluir_lancamento(cons["id"], mes)
+                    db.excluir_lancamento(cons["id"], mes, uni["id"])
                 except Exception:
                     st.error("Não foi possível excluir agora. Verifique a conexão e tente de novo.")
                 else:
