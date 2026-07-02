@@ -67,12 +67,17 @@ def listar_unidades():
 
 @st.cache_data(ttl=60)
 def listar_consultores(unidade_id):
-    """Consultores de uma unidade (id + nome)."""
+    """Consultores ATUALMENTE lotados numa unidade (id + nome).
+    A lotação vem de `consultor_unidade` (vínculo vigente = vigencia_fim IS NULL),
+    então um consultor transferido deixa de aparecer na unidade antiga e passa
+    a aparecer na nova, sem afetar o histórico de lançamentos já feitos."""
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(text(
-            "SELECT id, nome FROM consultores "
-            "WHERE unidade_id = :uid ORDER BY nome"
+            "SELECT c.id, c.nome FROM consultores c "
+            "JOIN consultor_unidade cu ON cu.consultor_id = c.id "
+            "WHERE cu.unidade_id = :uid AND cu.vigencia_fim IS NULL "
+            "ORDER BY c.nome"
         ), {"uid": unidade_id}).mappings().all()
     return [dict(r) for r in rows]
 
@@ -87,35 +92,51 @@ def ler_base_tidy():
     return df
 
 
-def obter_lancamento(consultor_id, mes):
-    """Valores já lançados para (consultor, mês), ou None se ainda não existir.
-    Útil para pré-preencher o formulário e permitir edição."""
+def obter_lancamento(consultor_id, mes, unidade_id):
+    """Valores já lançados para (consultor, mês, unidade), ou None se ainda não
+    existir. A unidade faz parte da chave: um mesmo consultor pode ter, no mesmo
+    mês, lançamentos em unidades diferentes (transferência no meio do mês)."""
     eng = get_engine()
     with eng.connect() as conn:
         row = conn.execute(text(
             "SELECT passagens, refil_diant, refil_tras "
-            "FROM lancamentos WHERE consultor_id = :cid AND mes = :mes"
-        ), {"cid": consultor_id, "mes": mes}).mappings().first()
+            "FROM lancamentos "
+            "WHERE consultor_id = :cid AND mes = :mes AND unidade_id = :uid"
+        ), {"cid": consultor_id, "mes": mes, "uid": unidade_id}).mappings().first()
     return dict(row) if row else None
 
 
 # ------------------------------- Gravação -------------------------------
-def salvar_lancamento(consultor_id, mes, passagens, refil_diant, refil_tras):
-    """Insere ou ATUALIZA (upsert) o lançamento de um consultor num mês.
-    Após gravar, limpa o cache de leitura para o dashboard refletir na hora."""
+def salvar_lancamento(consultor_id, mes, unidade_id, passagens, refil_diant, refil_tras):
+    """Insere ou ATUALIZA (upsert) o lançamento de um consultor num mês/unidade.
+    A chave é (consultor_id, mes, unidade_id): o mesmo consultor pode ter linhas
+    em unidades diferentes no mesmo mês. Após gravar, limpa o cache de leitura
+    para o dashboard refletir na hora."""
     eng = get_engine()
     with eng.begin() as conn:
         conn.execute(text("""
             INSERT INTO lancamentos
-                (consultor_id, mes, passagens, refil_diant, refil_tras)
-            VALUES (:cid, :mes, :passagens, :rd, :rt)
+                (consultor_id, mes, unidade_id, passagens, refil_diant, refil_tras)
+            VALUES (:cid, :mes, :uid, :passagens, :rd, :rt)
             ON DUPLICATE KEY UPDATE
                 passagens   = VALUES(passagens),
                 refil_diant = VALUES(refil_diant),
                 refil_tras  = VALUES(refil_tras)
-        """), {"cid": consultor_id, "mes": mes, "passagens": passagens,
-               "rd": refil_diant, "rt": refil_tras})
+        """), {"cid": consultor_id, "mes": mes, "uid": unidade_id,
+               "passagens": passagens, "rd": refil_diant, "rt": refil_tras})
     ler_base_tidy.clear()  # invalida o cache para o dashboard atualizar na hora
+
+
+def excluir_lancamento(consultor_id, mes, unidade_id):
+    """Remove o lançamento de um consultor num mês/unidade (inserido por engano).
+    Após excluir, limpa o cache de leitura para o dashboard refletir na hora."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM lancamentos "
+            "WHERE consultor_id = :cid AND mes = :mes AND unidade_id = :uid"
+        ), {"cid": consultor_id, "mes": mes, "uid": unidade_id})
+    ler_base_tidy.clear()
 
 
 # -------------------- Teste de conexão standalone --------------------
