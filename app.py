@@ -621,6 +621,10 @@ def pagina_lancamento():
 
 
 # ======================= PÁGINA: RELATÓRIO SEMANAL =======================
+# Verba paga ao gerente da unidade por refil vendido (R$ por unidade).
+VERBA_GER_DIANT, VERBA_GER_TRAS = 2.50, 1.25
+
+
 def _relatorio_semana(df, mes_sel):
     """Monta o ranking por gerente/unidade de um mês + a linha de totais."""
     sem = df[df["mes"] == mes_sel].copy()
@@ -630,10 +634,12 @@ def _relatorio_semana(df, mes_sel):
     g["aprov_t"] = (g["refil_tras"] / g["passagens"]).where(g["passagens"] > 0)
     tot_fat = g["total_geral"].sum()
     g["part"] = (g["total_geral"] / tot_fat) if tot_fat else 0.0
+    g["verba"] = g["refil_diant"] * VERBA_GER_DIANT + g["refil_tras"] * VERBA_GER_TRAS
     ov = agg_by(sem.assign(_g=1), "_g").iloc[0].to_dict()
     p = ov["passagens"]
     ov["aprov_d"] = (ov["refil_diant"] / p) if (p and p > 0) else None
     ov["aprov_t"] = (ov["refil_tras"] / p) if (p and p > 0) else None
+    ov["verba"] = ov["refil_diant"] * VERBA_GER_DIANT + ov["refil_tras"] * VERBA_GER_TRAS
     return g, ov
 
 
@@ -656,7 +662,8 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
                   f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')}").font = \
         Font(name="Arial", size=9, color="FF666666")
     head = ["Seq", "Gerente", "Marca", "Loja", "Passagens", "Refil Diant.", "% Aprov",
-            "Total Diant.", "Refil Tras.", "% Aprov", "Total Tras.", "Total Geral", "Part %"]
+            "Total Diant.", "Refil Tras.", "% Aprov", "Total Tras.", "Total Geral", "Part %",
+            "Verba"]
     H = 4
     for j, h in enumerate(head, 1):
         c = ws.cell(H, j, h); c.font = Font(name="Arial", bold=True, color=WHITE, size=10)
@@ -666,7 +673,7 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
         rr = H + 1 + i
         vals = [i + 1, r["gerente"], r["marca"], r["loja"], r["passagens"], r["refil_diant"],
                 r["aprov_d"], r["total_diant"], r["refil_tras"], r["aprov_t"],
-                r["total_tras"], r["total_geral"], r["part"]]
+                r["total_tras"], r["total_geral"], r["part"], r["verba"]]
         for j, v in enumerate(vals, 1):
             c = ws.cell(rr, j, _v(v)); c.font = Font(name="Arial", size=10); c.border = BD
             if j in (1, 5, 6, 7, 9, 10, 13):
@@ -675,7 +682,7 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
                 c.number_format = "#,##0"
             elif j in (7, 10, 13):
                 c.number_format = "0.0%"
-            elif j in (8, 11, 12):
+            elif j in (8, 11, 12, 14):
                 c.number_format = "R$ #,##0.00"
         if i % 2 == 1:
             for j in range(1, len(head) + 1):
@@ -684,16 +691,17 @@ def gerar_excel_semanal(g, ov, semana_lbl, ordenar):
     ws.cell(tr, 2, "TOTAL").font = Font(name="Arial", bold=True, size=10)
     tvals = {5: _v(ov["passagens"]), 6: _v(ov["refil_diant"]), 7: _v(ov["aprov_d"]),
              8: _v(ov["total_diant"]), 9: _v(ov["refil_tras"]), 10: _v(ov["aprov_t"]),
-             11: _v(ov["total_tras"]), 12: _v(ov["total_geral"]), 13: 1.0}
+             11: _v(ov["total_tras"]), 12: _v(ov["total_geral"]), 13: 1.0,
+             14: _v(ov["verba"])}
     for j, v in tvals.items():
         c = ws.cell(tr, j, v); c.font = Font(name="Arial", bold=True, size=10); c.border = BD
         if j in (5, 6, 9):
             c.number_format = "#,##0"; c.alignment = Alignment(horizontal="center")
         elif j in (7, 10, 13):
             c.number_format = "0.0%"; c.alignment = Alignment(horizontal="center")
-        elif j in (8, 11, 12):
+        elif j in (8, 11, 12, 14):
             c.number_format = "R$ #,##0.00"
-    for j, w in enumerate([5, 16, 8, 16, 11, 12, 9, 13, 11, 9, 13, 14, 8], 1):
+    for j, w in enumerate([5, 16, 8, 16, 11, 12, 9, 13, 11, 9, 13, 14, 8, 12], 1):
         ws.column_dimensions[get_column_letter(j)].width = w
     ws.freeze_panes = f"A{H + 1}"
     buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
@@ -749,7 +757,7 @@ def pagina_relatorio_semanal():
             "% Aprov (D)": fmt_pct(r["aprov_d"]), "Total Diant.": fmt_money(r["total_diant"]),
             "Refil Tras.": fmt_int(r["refil_tras"]), "% Aprov (T)": fmt_pct(r["aprov_t"]),
             "Total Tras.": fmt_money(r["total_tras"]), "Total Geral": fmt_money(r["total_geral"]),
-            "Part %": fmt_pct(r["part"]),
+            "Part %": fmt_pct(r["part"]), "Verba": fmt_money(r["verba"]),
         })
     linhas.append({
         "Seq": "", "Gerente": "TOTAL", "Marca": "", "Loja": "",
@@ -757,10 +765,12 @@ def pagina_relatorio_semanal():
         "% Aprov (D)": fmt_pct(ov["aprov_d"]), "Total Diant.": fmt_money(ov["total_diant"]),
         "Refil Tras.": fmt_int(ov["refil_tras"]), "% Aprov (T)": fmt_pct(ov["aprov_t"]),
         "Total Tras.": fmt_money(ov["total_tras"]), "Total Geral": fmt_money(ov["total_geral"]),
-        "Part %": "100,0%",
+        "Part %": "100,0%", "Verba": fmt_money(ov["verba"]),
     })
     st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
-    st.caption("Part % = participação da unidade no faturamento total da semana.")
+    st.caption(f"Verba = (Refil Diant. × R$ {fmt_money(VERBA_GER_DIANT)[3:]}) + "
+               f"(Refil Tras. × R$ {fmt_money(VERBA_GER_TRAS)[3:]}). "
+               "Part % = participação da unidade no faturamento total da semana.")
 
 
 # ===================== PÁGINA: RELATÓRIO POR CONSULTOR =====================
