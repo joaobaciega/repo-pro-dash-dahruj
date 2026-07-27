@@ -1,9 +1,12 @@
 """
 Fase 5 — App integrado (app.py)
 
-App único com duas telas, navegáveis pelo menu lateral:
+App único com telas navegáveis pelo menu lateral:
   - Dashboard: acompanhamento trimestral móvel (lê da view vw_base_tidy no MySQL).
-  - Lançamento: o gestor informa Passagens e Refis por consultor.
+  - Relatório Por Gerente / Por Consultor: rankings do mês.
+  - Lançamento (restrito): o gestor informa Passagens e Refis por consultor.
+    Não aparece no menu; só entra depois da senha pedida pelo cadeado no fim da
+    barra lateral (ver bloco ACESSO AO LANÇAMENTO).
 
 Tudo sai do banco: ao salvar um lançamento, o cache de leitura é limpo e o
 dashboard reflete a mudança na hora. Não usa mais Excel.
@@ -13,7 +16,9 @@ Como rodar (na pasta do projeto, com .streamlit/secrets.toml configurado):
 """
 
 import datetime as dt
+import hmac
 import io
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +44,20 @@ PALETTE = ["#EB5E33", "#F5A623", "#FF8A5B", "#F58220", "#FFFFFF",
            "#C0C0C0", "#B5451F", "#8A8A8A", "#FFB07C", "#E0E0E0"]
 MESES_PT = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
             "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
+# --------------------------- Acesso ao Lançamento ---------------------------
+# Dashboard e relatórios são abertos; o Lançamento fica oculto atrás do cadeado
+# no fim da barra lateral e só entra no menu depois da senha.
+PAG_DASHBOARD = "Dashboard"
+PAG_GERENTE = "Relatório Por Gerente"
+PAG_CONSULTOR = "Relatório Por Consultor"
+PAG_LANCAMENTO = "📝 Lançamento"
+PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_GERENTE, PAG_CONSULTOR]
+
+SENHA_LANCAMENTO = "Dahruj00$"   # pode ser trocada em secrets: [acesso] senha_lancamento
+_TTL_LANCAMENTO = 30 * 60        # segundos de inatividade até travar de novo
+_MAX_TENTATIVAS = 3
+_ESPERA_BLOQUEIO = 60            # segundos de espera após esgotar as tentativas
 
 
 # --------------------------- Identidade visual ---------------------------
@@ -280,8 +299,8 @@ def pagina_dashboard():
         return
 
     if df.empty:
-        st.info("Ainda não há lançamentos no banco. Vá em **Lançamento** (menu à "
-                "esquerda) para inserir dados.")
+        st.info("Ainda não há lançamentos no banco. Procure o gestor responsável "
+                "pelo lançamento dos dados.")
         return
 
     # ---- Seleção do mês de referência (menu suspenso) ----
@@ -512,6 +531,89 @@ def pagina_dashboard():
                          "Total Geral": st.column_config.NumberColumn(format="R$ %.2f")})
 
 
+# ========================= ACESSO AO LANÇAMENTO =========================
+def _senha_esperada():
+    """Senha configurada: secrets tem prioridade, a constante é o padrão."""
+    try:
+        return str(st.secrets["acesso"]["senha_lancamento"])
+    except (KeyError, FileNotFoundError):
+        return SENHA_LANCAMENTO
+
+
+def _senha_correta(senha):
+    """Compara em tempo constante, em bytes (a senha pode ter acento)."""
+    return bool(senha) and hmac.compare_digest(senha.encode("utf-8"),
+                                               _senha_esperada().encode("utf-8"))
+
+
+def _travar_lancamento():
+    """Limpa o estado de acesso — o Lançamento volta a ficar oculto."""
+    for chave in ("lanc_ok", "lanc_visto", "lanc_erros", "lanc_espera"):
+        st.session_state.pop(chave, None)
+
+
+def _revalidar_acesso():
+    """Diz se o Lançamento está liberado e renova o relógio de inatividade.
+
+    Tem efeito colateral: chamar uma única vez por execução, antes do menu.
+    """
+    if not st.session_state.get("lanc_ok"):
+        return False
+    agora = time.monotonic()
+    if agora - st.session_state.get("lanc_visto", agora) > _TTL_LANCAMENTO:
+        _travar_lancamento()
+        return False
+    st.session_state["lanc_visto"] = agora
+    return True
+
+
+@st.dialog("Área restrita")
+def _dialogo_senha():
+    """Pede a senha. Sem st.rerun(), o diálogo continua aberto com o erro."""
+    st.caption("Informe a senha para liberar a aba de Lançamento.")
+    with st.form("form_senha_lanc", clear_on_submit=True, border=False):
+        senha = st.text_input("Senha", type="password",
+                              label_visibility="collapsed", placeholder="Senha")
+        enviou = st.form_submit_button("Entrar", type="primary", width="stretch")
+    if not enviou:
+        return
+
+    restante = st.session_state.get("lanc_espera", 0.0) - time.monotonic()
+    if restante > 0:
+        st.error(f"Muitas tentativas. Aguarde {int(restante) + 1}s.")
+        return
+
+    if _senha_correta(senha):
+        st.session_state["lanc_ok"] = True
+        st.session_state["lanc_visto"] = time.monotonic()
+        st.session_state["lanc_ir"] = True
+        st.session_state.pop("lanc_erros", None)
+        st.rerun()                       # fecha o diálogo e roda o app inteiro
+
+    erros = st.session_state.get("lanc_erros", 0) + 1
+    if erros >= _MAX_TENTATIVAS:
+        st.session_state["lanc_espera"] = time.monotonic() + _ESPERA_BLOQUEIO
+        st.session_state["lanc_erros"] = 0
+        st.error("Muitas tentativas. Aguarde 1 minuto antes de tentar de novo.")
+    else:
+        st.session_state["lanc_erros"] = erros
+        st.error(f"Senha incorreta. Tentativa {erros} de {_MAX_TENTATIVAS}.")
+
+
+def _barra_acesso():
+    """Cadeado discreto no fim da barra lateral. Chamar após montar a página."""
+    st.sidebar.divider()
+    liberado = bool(st.session_state.get("lanc_ok"))
+    if st.sidebar.button("🔓" if liberado else "🔒", key="btn_cadeado",
+                         type="tertiary",
+                         help="Bloquear Lançamento" if liberado else "Área restrita"):
+        if liberado:
+            _travar_lancamento()
+            st.rerun()
+        else:
+            _dialogo_senha()
+
+
 # ============================ PÁGINA: LANÇAMENTO ============================
 def meses_recentes(n=6):
     """Últimos n meses (1º dia de cada), do atual para trás."""
@@ -533,6 +635,10 @@ def label_mes(d):
 
 
 def pagina_lancamento():
+    # Trava redundante ao menu: garante que a página não renderize sem senha.
+    if not st.session_state.get("lanc_ok"):
+        st.error("Área restrita. Libere o acesso no cadeado da barra lateral.")
+        return
     st.title("📝 Lançamento de dados")
     st.caption("Informe Passagens e Refis por consultor. O faturamento é calculado "
                "automaticamente a partir das quantidades.")
@@ -937,15 +1043,27 @@ def pagina_relatorio_consultor():
 _injetar_css()
 mostrar_logo()
 st.sidebar.title("Dahruj")
-pagina = st.sidebar.radio("Menu", ["Dashboard", "Lançamento", "Relatório Por Gerente",
-                                   "Relatório Por Consultor"])
+
+# Normalização ANTES do menu: com o widget key="menu_pagina" já criado, escrever
+# em st.session_state["menu_pagina"] levanta StreamlitAPIException.
+_ir_para_lanc = st.session_state.pop("lanc_ir", False)
+_liberado = _revalidar_acesso()
+if _liberado and _ir_para_lanc:
+    st.session_state["menu_pagina"] = PAG_LANCAMENTO
+elif not _liberado and st.session_state.get("menu_pagina") == PAG_LANCAMENTO:
+    st.session_state["menu_pagina"] = PAG_DASHBOARD
+
+opcoes = PAGINAS_PUBLICAS + ([PAG_LANCAMENTO] if _liberado else [])
+pagina = st.sidebar.radio("Menu", opcoes, key="menu_pagina")
 st.sidebar.divider()
 
-if pagina == "Dashboard":
-    pagina_dashboard()
-elif pagina == "Lançamento":
-    pagina_lancamento()
-elif pagina == "Relatório Por Gerente":
-    pagina_relatorio_semanal()
-else:
-    pagina_relatorio_consultor()
+DESTINOS = {
+    PAG_DASHBOARD: pagina_dashboard,
+    PAG_GERENTE: pagina_relatorio_semanal,
+    PAG_CONSULTOR: pagina_relatorio_consultor,
+    PAG_LANCAMENTO: pagina_lancamento,
+}
+try:
+    DESTINOS.get(pagina, pagina_dashboard)()
+finally:
+    _barra_acesso()                      # cadeado sobrevive a erro na página
