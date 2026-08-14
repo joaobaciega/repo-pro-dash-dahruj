@@ -92,6 +92,53 @@ def ler_base_tidy():
     return df
 
 
+@st.cache_data(ttl=60)
+def ler_vendas_verbas():
+    """Base da aba Verbas: vendas por produto, com as três verbas por linha.
+
+    Vem de `vendas_verbas`, alimentada por `importar_verbas.py` a partir do Excel
+    — não da view `vw_base_tidy`, que é outra base (lançamentos por consultor).
+
+    Devolve DataFrame vazio se a tabela ainda não existir: o app trata isso como
+    "base não importada" em vez de estourar erro de conexão.
+    """
+    eng = get_engine()
+    try:
+        with eng.connect() as conn:
+            df = pd.read_sql(text("SELECT * FROM vendas_verbas"), conn)
+    except Exception:
+        return pd.DataFrame()
+    if df.empty:
+        return df
+    df["data"] = pd.to_datetime(df["data"])
+    # DECIMAL chega como Decimal; float evita Decimal × float nas agregações.
+    for c in ("preco_unit", "total_item", "verba_consultor", "total_consultor",
+              "verba_gerente", "total_gerente", "verba_reserva", "total_reserva"):
+        df[c] = df[c].astype(float)
+    df["qtde"] = df["qtde"].astype(int)
+    return df
+
+
+@st.cache_data(ttl=60)
+def ler_pagamentos_verba():
+    """Meses cuja verba já foi paga: {Timestamp(1º dia do mês): {consultor, gerente}}.
+
+    Marketing não entra — a reserva nunca é paga a ninguém, então é sempre saldo.
+    Mês ausente do dicionário = nada pago naquele mês.
+    """
+    eng = get_engine()
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT mes, consultor_pago, gerente_pago FROM verbas_pagamentos"
+            )).mappings().all()
+    except Exception:
+        return {}
+    return {pd.Timestamp(r["mes"]): {"consultor": bool(r["consultor_pago"]),
+                                     "gerente": bool(r["gerente_pago"])}
+            for r in rows}
+
+
 def obter_lancamento(consultor_id, mes, unidade_id):
     """Valores já lançados para (consultor, mês, unidade), ou None se ainda não
     existir. A unidade faz parte da chave: um mesmo consultor pode ter, no mesmo

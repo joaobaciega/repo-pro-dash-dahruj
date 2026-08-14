@@ -49,10 +49,11 @@ MESES_PT = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
 # Dashboard e relatórios são abertos; o Lançamento fica oculto atrás do cadeado
 # no fim da barra lateral e só entra no menu depois da senha.
 PAG_DASHBOARD = "Dashboard"
+PAG_VERBAS = "💰 Verbas"
 PAG_GERENTE = "Relatório Por Gerente"
 PAG_CONSULTOR = "Relatório Por Consultor"
 PAG_LANCAMENTO = "📝 Lançamento"
-PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_GERENTE, PAG_CONSULTOR]
+PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_VERBAS, PAG_GERENTE, PAG_CONSULTOR]
 
 SENHA_LANCAMENTO = "Dahruj00$"   # pode ser trocada em secrets: [acesso] senha_lancamento
 _TTL_LANCAMENTO = 30 * 60        # segundos de inatividade até travar de novo
@@ -529,6 +530,245 @@ def pagina_dashboard():
                          "Total Diant.": st.column_config.NumberColumn(format="R$ %.2f"),
                          "Total Tras.": st.column_config.NumberColumn(format="R$ %.2f"),
                          "Total Geral": st.column_config.NumberColumn(format="R$ %.2f")})
+
+
+# ============================== PÁGINA: VERBAS ==============================
+# Esta página NÃO usa a view vw_base_tidy. Ela lê `vendas_verbas`, que vem da
+# planilha "Base de dados para Dash Board.xlsx" (sell-in: pedidos faturados para
+# as concessionárias, linha a linha por produto) via `importar_verbas.py`.
+#
+# São bases diferentes de propósito: o Dashboard mede o sell-out por consultor
+# (passagens → refis), aqui medimos a verba gerada por venda. Por isso os cards
+# daqui saem TODOS da mesma base — misturar as duas fontes numa linha de KPIs
+# produziria números que não fecham entre si.
+#
+# Passagens e Aproveitamento não aparecem aqui: a base de vendas não tem
+# passagens, e não há como derivá-las.
+VERBAS_CATS = [("consultor", "Consultor", "total_consultor"),
+               ("gerente", "Gerente", "total_gerente"),
+               ("marketing", "Marketing", "total_reserva")]
+OPCAO_ANO = "Ano todo"
+
+
+def _resumo_verbas(df, pagos):
+    """Verba gerada, paga e saldo do recorte `df`, por categoria e no total.
+
+    Paga = só as categorias marcadas em `verbas_pagamentos`, mês a mês. Cada
+    categoria tem sua própria marcação, então um mês pode ter consultor pago e
+    gerente em aberto.
+
+    Marketing nunca entra em "paga": a reserva não é paga a ninguém, é sempre
+    saldo. É isso que faz Janeiro entrar inteiro no saldo — naquele mês nada foi
+    pago a consultor nem a gerente, tudo virou marketing.
+    """
+    gerada = {cat: float(df[col].sum()) for cat, _, col in VERBAS_CATS}
+    paga = {cat: 0.0 for cat, _, _ in VERBAS_CATS}
+
+    if not df.empty:
+        por_mes = df.groupby(df["data"].dt.to_period("M"))
+        for periodo, g in por_mes:
+            flags = pagos.get(pd.Timestamp(periodo.start_time), {})
+            if flags.get("consultor"):
+                paga["consultor"] += float(g["total_consultor"].sum())
+            if flags.get("gerente"):
+                paga["gerente"] += float(g["total_gerente"].sum())
+
+    saldo = {cat: gerada[cat] - paga[cat] for cat, _, _ in VERBAS_CATS}
+    for d in (gerada, paga, saldo):
+        d["total"] = sum(d[cat] for cat, _, _ in VERBAS_CATS)
+    return gerada, paga, saldo
+
+
+def _status_mes(mes, pagos, tem_dado):
+    """Rótulo do mês na tabela: só é 'Pago' quando consultor E gerente saíram."""
+    if not tem_dado:
+        return "—"
+    flags = pagos.get(pd.Timestamp(mes), {})
+    if flags.get("consultor") and flags.get("gerente"):
+        return "Pago"
+    if flags.get("consultor") or flags.get("gerente"):
+        return "Parcial"
+    return "Em aberto"
+
+
+def pagina_verbas():
+    st.title("💰 Verbas — Saldo e Pagamentos")
+    try:
+        df = db.ler_vendas_verbas()
+        pagos = db.ler_pagamentos_verba()
+    except Exception:
+        st.error("Não foi possível conectar ao banco de dados no momento. "
+                 "Verifique se o MySQL está ativo e tente novamente.")
+        return
+
+    if df.empty:
+        st.info("A base de verbas ainda não foi importada. Atualize a planilha "
+                "*Base de dados para Dash Board.xlsx* e rode `python importar_verbas.py` "
+                "na pasta do projeto.")
+        return
+
+    # ---- Filtro: ano + mês (o mês manda nos cards e no bloco de verbas) ----
+    anos = sorted(df["data"].dt.year.unique(), reverse=True)
+    cano, cmes, _ = st.columns([1, 2, 3])
+    ano = cano.selectbox("Ano", anos, index=0)
+
+    do_ano = df[df["data"].dt.year == ano]
+    meses_disp = sorted(do_ano["data"].dt.to_period("M").unique(), reverse=True)
+    labels = [OPCAO_ANO] + [mlabel(m.start_time) for m in meses_disp]
+    mes_lbl = cmes.selectbox(
+        "📅 Mês", labels, index=0,
+        help="Filtra os cards e o bloco de verbas. A tabela e o gráfico abaixo "
+             "sempre mostram os 12 meses do ano.")
+
+    if mes_lbl == OPCAO_ANO:
+        rec = do_ano
+        periodo, anterior = f"{ano}", None
+    else:
+        p = meses_disp[labels.index(mes_lbl) - 1]
+        rec = do_ano[do_ano["data"].dt.to_period("M") == p]
+        periodo = mes_lbl
+        # Mês anterior para o delta — pode não existir (primeiro mês da base).
+        ant_p = p - 1
+        prev = df[df["data"].dt.to_period("M") == ant_p]
+        anterior = prev if not prev.empty else None
+
+    ultima = df["data"].max()
+    st.caption(f"Base atualizada até {ultima.strftime('%d/%m/%Y')} · "
+               f"{len(df)} vendas · exibindo **{periodo}**")
+
+    # ---- KPIs do período (tudo da mesma base) ----
+    def kpis(d):
+        pedidos = d["pedido"].nunique()
+        return {
+            "fat": float(d["total_item"].sum()),
+            "diant": int(d.loc[d["tipo_refil"] == "diant", "qtde"].sum()),
+            "tras": int(d.loc[d["tipo_refil"] == "tras", "qtde"].sum()),
+            "pedidos": pedidos,
+            "qtde": int(d["qtde"].sum()),
+            "ticket": float(d["total_item"].sum()) / pedidos if pedidos else 0.0,
+        }
+
+    k = kpis(rec)
+    ka = kpis(anterior) if anterior is not None else None
+
+    def d(chave, kind):
+        return delta_str(k[chave] - ka[chave], kind) if ka else None
+
+    r1 = st.columns(3)
+    r1[0].metric(f"Faturamento ({periodo})", fmt_money(k["fat"]), d("fat", "money"))
+    r1[1].metric("Refil Diant. (pares)", fmt_int(k["diant"]), d("diant", "int"))
+    r1[2].metric("Refil Tras. (un)", fmt_int(k["tras"]), d("tras", "int"))
+    r2 = st.columns(3)
+    r2[0].metric("Nº de Pedidos", fmt_int(k["pedidos"]), d("pedidos", "int"))
+    r2[1].metric("Qtde total vendida", fmt_int(k["qtde"]), d("qtde", "int"))
+    r2[2].metric("Ticket médio / pedido", fmt_money(k["ticket"]), d("ticket", "money"))
+    if ka:
+        st.caption("Variação comparada ao mês imediatamente anterior.")
+    st.divider()
+
+    # ---- Verba gerada / paga / saldo ----
+    gerada, paga, saldo = _resumo_verbas(rec, pagos)
+
+    st.subheader(f"Verba gerada — {periodo}")
+    cg = st.columns(4)
+    for i, (cat, rotulo, _) in enumerate(VERBAS_CATS):
+        cg[i].metric(rotulo, fmt_money(gerada[cat]))
+    cg[3].metric("Total gerado", fmt_money(gerada["total"]))
+
+    st.subheader("Verba já paga")
+    cp = st.columns(4)
+    cp[0].metric("Consultor", fmt_money(paga["consultor"]))
+    cp[1].metric("Gerente", fmt_money(paga["gerente"]))
+    cp[2].metric("Marketing", "—", help="A reserva de marketing não é paga a "
+                                        "ninguém: entra inteira no saldo.")
+    cp[3].metric("Total pago", fmt_money(paga["total"]))
+
+    st.subheader("Saldo de verba")
+    cs = st.columns(4)
+    for i, (cat, rotulo, _) in enumerate(VERBAS_CATS):
+        cs[i].metric(rotulo, fmt_money(saldo[cat]))
+    cs[3].metric("SALDO TOTAL", fmt_money(saldo["total"]))
+
+    with st.expander("Como o saldo é calculado"):
+        em_aberto = []
+        for p in sorted(rec["data"].dt.to_period("M").unique()):
+            flags = pagos.get(pd.Timestamp(p.start_time), {})
+            g = rec[rec["data"].dt.to_period("M") == p]
+            partes = []
+            if not flags.get("consultor"):
+                partes.append(f"consultor {fmt_money(g['total_consultor'].sum())}")
+            if not flags.get("gerente"):
+                partes.append(f"gerente {fmt_money(g['total_gerente'].sum())}")
+            partes.append(f"marketing {fmt_money(g['total_reserva'].sum())}")
+            em_aberto.append(f"- **{mlabel(p.start_time)}**: " + " · ".join(partes))
+        st.markdown(
+            "**Saldo = verba gerada − verba paga**, mês a mês e por categoria.\n\n"
+            "A verba de marketing nunca é paga, então entra inteira no saldo em "
+            "todo mês. Consultor e gerente só saem do saldo nos meses marcados "
+            "como pagos na aba **Pagamentos** da planilha.\n\n"
+            "Composição do saldo no período exibido:\n\n" + "\n".join(em_aberto))
+    st.divider()
+
+    # ---- Tabela mês a mês (12 meses, independente do filtro) ----
+    st.subheader(f"Verbas mês a mês — {ano}")
+    por_mes = do_ano.groupby(do_ano["data"].dt.month)
+    linhas, totais = [], dict(fat=0.0, c=0.0, g=0.0, m=0.0)
+    for num in range(1, 13):
+        tem = num in por_mes.groups
+        gr = por_mes.get_group(num) if tem else None
+        vals = {
+            "fat": float(gr["total_item"].sum()) if tem else None,
+            "c": float(gr["total_consultor"].sum()) if tem else None,
+            "g": float(gr["total_gerente"].sum()) if tem else None,
+            "m": float(gr["total_reserva"].sum()) if tem else None,
+        }
+        if tem:
+            for chave in totais:
+                totais[chave] += vals[chave]
+        linhas.append({
+            "Mês": MESES_PT[num],
+            "Faturamento": fmt_money(vals["fat"]) if tem else "—",
+            "Verba Consultor": fmt_money(vals["c"]) if tem else "—",
+            "Verba Gerente": fmt_money(vals["g"]) if tem else "—",
+            "Verba Marketing": fmt_money(vals["m"]) if tem else "—",
+            "Total Verbas": fmt_money(vals["c"] + vals["g"] + vals["m"]) if tem else "—",
+            "Status": _status_mes(dt.date(ano, num, 1), pagos, tem),
+        })
+    linhas.append({
+        "Mês": "TOTAL",
+        "Faturamento": fmt_money(totais["fat"]),
+        "Verba Consultor": fmt_money(totais["c"]),
+        "Verba Gerente": fmt_money(totais["g"]),
+        "Verba Marketing": fmt_money(totais["m"]),
+        "Total Verbas": fmt_money(totais["c"] + totais["g"] + totais["m"]),
+        "Status": "",
+    })
+    st.dataframe(pd.DataFrame(linhas), width="stretch", hide_index=True)
+    st.caption("“Pago” = verba de consultor E de gerente já quitadas naquele mês "
+               "(marcação da aba Pagamentos). “Parcial” = só uma das duas.")
+
+    # ---- Gráfico: 3 verbas mês a mês ----
+    st.subheader("Evolução das verbas")
+    dados = []
+    for num in range(1, 13):
+        gr = por_mes.get_group(num) if num in por_mes.groups else None
+        for cat, rotulo, col in VERBAS_CATS:
+            dados.append({"Mês": MESES_PT[num][:3],
+                          "Verba": rotulo,
+                          "Valor": float(gr[col].sum()) if gr is not None else 0.0})
+    fig = px.bar(pd.DataFrame(dados), x="Mês", y="Valor", color="Verba",
+                 barmode="group", color_discrete_sequence=PALETTE,
+                 category_orders={"Mês": [m[:3] for m in MESES_PT[1:]],
+                                  "Verba": [r for _, r, _ in VERBAS_CATS]})
+    fig.update_traces(hovertemplate="%{x}<br>R$ %{y:,.2f}<extra>%{fullData.name}</extra>")
+    fig.update_layout(template="plotly_dark", height=380,
+                      margin=dict(l=10, r=10, t=30, b=10),
+                      xaxis_title=None, yaxis_title=None,
+                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      font_color=BRANCO,
+                      legend=dict(orientation="h", y=-0.15, title=None))
+    fig.update_yaxes(rangemode="tozero", tickprefix="R$ ")
+    st.plotly_chart(fig, width="stretch")
 
 
 # ========================= ACESSO AO LANÇAMENTO =========================
@@ -1059,6 +1299,7 @@ st.sidebar.divider()
 
 DESTINOS = {
     PAG_DASHBOARD: pagina_dashboard,
+    PAG_VERBAS: pagina_verbas,
     PAG_GERENTE: pagina_relatorio_semanal,
     PAG_CONSULTOR: pagina_relatorio_consultor,
     PAG_LANCAMENTO: pagina_lancamento,
