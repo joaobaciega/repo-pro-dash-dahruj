@@ -49,11 +49,11 @@ MESES_PT = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
 # Dashboard e relatórios são abertos; o Lançamento fica oculto atrás do cadeado
 # no fim da barra lateral e só entra no menu depois da senha.
 PAG_DASHBOARD = "Dashboard"
-PAG_VERBAS = "💰 Verbas"
+PAG_VERBAS = "Verbas"
 PAG_GERENTE = "Relatório Por Gerente"
 PAG_CONSULTOR = "Relatório Por Consultor"
 PAG_LANCAMENTO = "📝 Lançamento"
-PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_VERBAS, PAG_GERENTE, PAG_CONSULTOR]
+PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_GERENTE, PAG_CONSULTOR, PAG_VERBAS]
 
 SENHA_LANCAMENTO = "Dahruj00$"   # pode ser trocada em secrets: [acesso] senha_lancamento
 _TTL_LANCAMENTO = 30 * 60        # segundos de inatividade até travar de novo
@@ -73,6 +73,9 @@ def _injetar_css():
             background: #1A1A1A; border-left: 5px solid {ORANGE};
             border-radius: 8px; padding: 14px 16px; }}
         div[data-testid="stMetricValue"] {{ color: {BRANCO}; }}
+        /* Verba gerada: 2px abaixo do padrão do Streamlit (2.25rem = 36px) para
+           os centavos de "Total gerado" não estourarem em telas estreitas. */
+        .st-key-verba_gerada div[data-testid="stMetricValue"] {{ font-size: 34px; }}
         /* Sidebar mais escura, com borda laranja sutil */
         section[data-testid="stSidebar"] {{
             background: #0A0A0A; border-right: 1px solid rgba(235,94,51,.35); }}
@@ -593,12 +596,20 @@ def _status_mes(mes, pagos, tem_dado):
 
 def pagina_verbas():
     st.title("💰 Verbas — Saldo e Pagamentos")
+    # Dois erros diferentes, duas mensagens: tratar tudo como "falha de conexão"
+    # já mascarou um deploy em que o app.py novo subiu sem o db.py novo.
+    if not hasattr(db, "ler_vendas_verbas"):
+        st.error("O `db.py` publicado está desatualizado: faltam as funções de "
+                 "leitura da base de verbas. Suba a versão nova do `db.py` junto "
+                 "com o `app.py` e reinicie o app.")
+        return
     try:
         df = db.ler_vendas_verbas()
         pagos = db.ler_pagamentos_verba()
-    except Exception:
+    except Exception as e:
         st.error("Não foi possível conectar ao banco de dados no momento. "
                  "Verifique se o MySQL está ativo e tente novamente.")
+        st.caption(f"Detalhe técnico: {type(e).__name__}: {e}")
         return
 
     if df.empty:
@@ -670,10 +681,13 @@ def pagina_verbas():
     gerada, paga, saldo = _resumo_verbas(rec, pagos)
 
     st.subheader(f"Verba gerada — {periodo}")
-    cg = st.columns(4)
-    for i, (cat, rotulo, _) in enumerate(VERBAS_CATS):
-        cg[i].metric(rotulo, fmt_money(gerada[cat]))
-    cg[3].metric("Total gerado", fmt_money(gerada["total"]))
+    # key= gera a classe .st-key-verba_gerada, usada no CSS para reduzir a fonte
+    # só desta linha (os valores aqui são os maiores da página).
+    with st.container(key="verba_gerada"):
+        cg = st.columns(4)
+        for i, (cat, rotulo, _) in enumerate(VERBAS_CATS):
+            cg[i].metric(rotulo, fmt_money(gerada[cat]))
+        cg[3].metric("Total gerado", fmt_money(gerada["total"]))
 
     st.subheader("Verba já paga")
     cp = st.columns(4)
@@ -703,9 +717,9 @@ def pagina_verbas():
             em_aberto.append(f"- **{mlabel(p.start_time)}**: " + " · ".join(partes))
         st.markdown(
             "**Saldo = verba gerada − verba paga**, mês a mês e por categoria.\n\n"
-            "A verba de marketing nunca é paga, então entra inteira no saldo em "
-            "todo mês. Consultor e gerente só saem do saldo nos meses marcados "
-            "como pagos na aba **Pagamentos** da planilha.\n\n"
+            "A verba de Marketing é paga separadamente para ser usada em eventos "
+            "estratégicos de marketing. Consultor e gerente só saem do saldo nos "
+            "meses marcados como pagos na aba **Pagamentos** da planilha.\n\n"
             "Composição do saldo no período exibido:\n\n" + "\n".join(em_aberto))
     st.divider()
 
