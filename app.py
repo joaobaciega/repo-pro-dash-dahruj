@@ -594,6 +594,54 @@ def _status_mes(mes, pagos, tem_dado):
     return "Em aberto"
 
 
+XLSX_COLS = [("mes", "Mês", 14), ("fat", "Faturamento", 16),
+             ("c", "Verba Consultor", 16), ("g", "Verba Gerente", 16),
+             ("m", "Verba Marketing", 16), ("total", "Total Verbas", 16),
+             ("status", "Status", 12)]
+
+
+def _xlsx_verbas_mes(brutos, ano):
+    """Gera o .xlsx da tabela mês a mês e devolve os bytes do arquivo.
+
+    Grava os valores como NÚMERO, com formatação de moeda aplicada na célula —
+    não como o texto "R$ 14.700,00" que aparece na tela. Assim a planilha
+    exportada continua servindo para somar, ordenar e montar gráfico. Meses sem
+    venda ficam com a célula vazia, o equivalente natural do "—" da tela.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Verbas {ano}"
+
+    cab_fill = PatternFill("solid", fgColor=ORANGE.lstrip("#"))
+    cab_font = Font(bold=True, color="FFFFFF")
+    moeda = 'R$ #,##0.00'
+    borda_topo = Border(top=Side(style="thin", color="808080"))
+
+    for i, (_, rotulo, larg) in enumerate(XLSX_COLS, start=1):
+        cel = ws.cell(row=1, column=i, value=rotulo)
+        cel.fill, cel.font = cab_fill, cab_font
+        cel.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[get_column_letter(i)].width = larg
+
+    for r, linha in enumerate(brutos, start=2):
+        for i, (chave, _, _) in enumerate(XLSX_COLS, start=1):
+            cel = ws.cell(row=r, column=i, value=linha[chave])
+            if chave not in ("mes", "status"):
+                cel.number_format = moeda
+            if linha["mes"] == "TOTAL":
+                cel.font = Font(bold=True)
+                cel.border = borda_topo
+
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def pagina_verbas():
     st.title("💰 Verbas — Saldo e Pagamentos")
     # Dois erros diferentes, duas mensagens: tratar tudo como "falha de conexão"
@@ -726,7 +774,9 @@ def pagina_verbas():
     # ---- Tabela mês a mês (12 meses, independente do filtro) ----
     st.subheader(f"Verbas mês a mês — {ano}")
     por_mes = do_ano.groupby(do_ano["data"].dt.month)
-    linhas, totais = [], dict(fat=0.0, c=0.0, g=0.0, m=0.0)
+    # `brutos` guarda os valores como número; a tela formata e o .xlsx exporta o
+    # número puro. Uma fonte só para os dois, para não divergirem.
+    brutos, totais = [], dict(fat=0.0, c=0.0, g=0.0, m=0.0)
     for num in range(1, 13):
         tem = num in por_mes.groups
         gr = por_mes.get_group(num) if tem else None
@@ -739,27 +789,28 @@ def pagina_verbas():
         if tem:
             for chave in totais:
                 totais[chave] += vals[chave]
-        linhas.append({
-            "Mês": MESES_PT[num],
-            "Faturamento": fmt_money(vals["fat"]) if tem else "—",
-            "Verba Consultor": fmt_money(vals["c"]) if tem else "—",
-            "Verba Gerente": fmt_money(vals["g"]) if tem else "—",
-            "Verba Marketing": fmt_money(vals["m"]) if tem else "—",
-            "Total Verbas": fmt_money(vals["c"] + vals["g"] + vals["m"]) if tem else "—",
-            "Status": _status_mes(dt.date(ano, num, 1), pagos, tem),
+        brutos.append({
+            "mes": MESES_PT[num], **vals,
+            "total": vals["c"] + vals["g"] + vals["m"] if tem else None,
+            "status": _status_mes(dt.date(ano, num, 1), pagos, tem),
         })
-    linhas.append({
-        "Mês": "TOTAL",
-        "Faturamento": fmt_money(totais["fat"]),
-        "Verba Consultor": fmt_money(totais["c"]),
-        "Verba Gerente": fmt_money(totais["g"]),
-        "Verba Marketing": fmt_money(totais["m"]),
-        "Total Verbas": fmt_money(totais["c"] + totais["g"] + totais["m"]),
-        "Status": "",
+    brutos.append({
+        "mes": "TOTAL", **totais,
+        "total": totais["c"] + totais["g"] + totais["m"], "status": "",
     })
+
+    linhas = [{rotulo: (b[chave] if chave in ("mes", "status")
+                        else fmt_money(b[chave]) if b[chave] is not None else "—")
+               for chave, rotulo, _ in XLSX_COLS} for b in brutos]
     st.dataframe(pd.DataFrame(linhas), width="stretch", hide_index=True)
     st.caption("“Pago” = verba de consultor E de gerente já quitadas naquele mês "
                "(marcação da aba Pagamentos). “Parcial” = só uma das duas.")
+    st.download_button(
+        "Exportar relatório (.xlsx)", _xlsx_verbas_mes(brutos, ano),
+        file_name=f"verbas_mes_a_mes_{ano}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Baixa esta tabela em Excel, com os valores como número "
+             "(prontos para somar e ordenar), não como texto.")
 
     # ---- Gráfico: 3 verbas mês a mês ----
     st.subheader("Evolução das verbas")
