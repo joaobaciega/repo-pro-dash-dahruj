@@ -139,6 +139,70 @@ def ler_pagamentos_verba():
             for r in rows}
 
 
+@st.cache_data(ttl=60)
+def ler_historico_lancamentos():
+    """Trilha de TODOS os lançamentos já gravados (a página "Histórico" lê daqui).
+
+    Vem da view `vw_lancamentos_historico`, que numera o lançamento dentro do mês
+    e calcula a diferença para o lançamento anterior — o que foi vendido naquele
+    período. É a base das análises semanais, já que `lancamentos` só guarda o
+    acumulado mais recente do mês.
+
+    NÃO engole erro: se a leitura falhar, a exceção sobe e a página mostra o
+    motivo junto com `diagnostico_historico()`. Engolir aqui era o que fazia a
+    tela dizer só "verifique a conexão" sem dizer o quê.
+    """
+    eng = get_engine()
+    with eng.connect() as conn:
+        df = pd.read_sql(text("SELECT * FROM vw_lancamentos_historico"), conn)
+    if df.empty:
+        return df
+    df["mes"] = pd.to_datetime(df["mes"])
+    df["registrado_em"] = pd.to_datetime(df["registrado_em"])
+    # DECIMAL/None chegam como object dependendo da versão do pandas e do driver.
+    # `to_numeric` converte os dois e transforma o que não der em NaN; o
+    # `astype(float)` que estava aqui quebrava conforme a versão do ambiente.
+    for c in ("n_lancamento", "passagens", "refil_diant", "refil_tras",
+              "aproveitamento", "total_geral", "passagens_periodo",
+              "refil_diant_periodo", "refil_tras_periodo", "total_periodo"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
+def diagnostico_historico():
+    """Onde o app está conectado e o que existe lá — a tela de erro do Histórico
+    mostra isto. É o que separa "estou no banco errado" de "a migração não rodou
+    neste banco" de "a view existe mas veio diferente do esperado"."""
+    info = {}
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"conexão": f"ERRO: {type(e).__name__}: {e}"}
+    u = eng.url
+    info["servidor"] = f"{u.host}:{u.port}"
+    info["banco"] = u.database
+    info["usuário"] = u.username
+    for rotulo, sql in (
+        ("lancamentos", "SELECT COUNT(*) FROM lancamentos"),
+        ("lancamentos_historico", "SELECT COUNT(*) FROM lancamentos_historico"),
+        ("vw_lancamentos_historico", "SELECT COUNT(*) FROM vw_lancamentos_historico"),
+    ):
+        try:
+            with eng.connect() as conn:
+                info[rotulo] = conn.execute(text(sql)).scalar()
+        except Exception as e:
+            info[rotulo] = f"ERRO: {type(e).__name__}: {str(e)[:200]}"
+    try:
+        with eng.connect() as conn:
+            cols = pd.read_sql(text("SELECT * FROM vw_lancamentos_historico LIMIT 0"), conn)
+        info["colunas da view"] = ", ".join(cols.columns)
+    except Exception as e:
+        info["colunas da view"] = f"ERRO: {type(e).__name__}: {str(e)[:200]}"
+    info["pandas"] = pd.__version__
+    return info
+
+
 def obter_lancamento(consultor_id, mes, unidade_id):
     """Valores já lançados para (consultor, mês, unidade), ou None se ainda não
     existir. A unidade faz parte da chave: um mesmo consultor pode ter, no mesmo
@@ -154,11 +218,34 @@ def obter_lancamento(consultor_id, mes, unidade_id):
 
 
 # ------------------------------- Gravação -------------------------------
+# Toda gravação faz DUAS coisas na MESMA transação: mexe em `lancamentos` (o
+# estado atual, que o dashboard lê) e acrescenta um evento em
+# `lancamentos_historico` (a trilha, que nunca é sobrescrita). O histórico usa
+# INSERT ... SELECT para pegar nome do consultor, nome da unidade e marca no
+# próprio SQL — assim a exportação continua legível mesmo se o cadastro mudar
+# depois, e estas funções não precisam receber parâmetro novo.
+_SQL_EVENTO_HISTORICO = """
+    INSERT INTO lancamentos_historico
+        (consultor_id, unidade_id, mes, tipo, passagens, refil_diant, refil_tras,
+         consultor_nome, unidade_nome, marca, origem)
+    SELECT :cid, :uid, :mes, :tipo, :passagens, :rd, :rt,
+           c.nome, u.nome_exibicao, u.marca, 'app'
+    FROM consultores c
+    JOIN unidades u ON u.id = :uid
+    WHERE c.id = :cid
+"""
+
+
 def salvar_lancamento(consultor_id, mes, unidade_id, passagens, refil_diant, refil_tras):
     """Insere ou ATUALIZA (upsert) o lançamento de um consultor num mês/unidade.
     A chave é (consultor_id, mes, unidade_id): o mesmo consultor pode ter linhas
     em unidades diferentes no mesmo mês. Após gravar, limpa o cache de leitura
-    para o dashboard refletir na hora."""
+    para o dashboard refletir na hora.
+
+    O upsert sobrescreve o valor anterior de propósito — o mês vale o acumulado
+    mais recente. O que não pode se perder é o RASTRO, então o mesmo save
+    acrescenta um evento em `lancamentos_historico`. Todo clique em "Salvar" vira
+    um evento, mesmo sem mudança de valor: uma semana sem venda é informação."""
     eng = get_engine()
     with eng.begin() as conn:
         conn.execute(text("""
@@ -171,19 +258,33 @@ def salvar_lancamento(consultor_id, mes, unidade_id, passagens, refil_diant, ref
                 refil_tras  = VALUES(refil_tras)
         """), {"cid": consultor_id, "mes": mes, "uid": unidade_id,
                "passagens": passagens, "rd": refil_diant, "rt": refil_tras})
+        conn.execute(text(_SQL_EVENTO_HISTORICO),
+                     {"cid": consultor_id, "mes": mes, "uid": unidade_id,
+                      "tipo": "lancamento", "passagens": passagens,
+                      "rd": refil_diant, "rt": refil_tras})
     ler_base_tidy.clear()  # invalida o cache para o dashboard atualizar na hora
+    ler_historico_lancamentos.clear()
 
 
 def excluir_lancamento(consultor_id, mes, unidade_id):
     """Remove o lançamento de um consultor num mês/unidade (inserido por engano).
-    Após excluir, limpa o cache de leitura para o dashboard refletir na hora."""
+    Após excluir, limpa o cache de leitura para o dashboard refletir na hora.
+
+    A exclusão também vira evento no histórico, com zeros: o estado do mês depois
+    dela é zero, então a diferença registrada é negativa e "devolve" o acumulado.
+    Assim o próximo lançamento do mês volta a contar do zero e a soma das
+    diferenças continua batendo com o acumulado."""
     eng = get_engine()
     with eng.begin() as conn:
         conn.execute(text(
             "DELETE FROM lancamentos "
             "WHERE consultor_id = :cid AND mes = :mes AND unidade_id = :uid"
         ), {"cid": consultor_id, "mes": mes, "uid": unidade_id})
+        conn.execute(text(_SQL_EVENTO_HISTORICO),
+                     {"cid": consultor_id, "mes": mes, "uid": unidade_id,
+                      "tipo": "exclusao", "passagens": 0, "rd": 0, "rt": 0})
     ler_base_tidy.clear()
+    ler_historico_lancamentos.clear()
 
 
 # -------------------- Teste de conexão standalone --------------------
@@ -195,9 +296,16 @@ if __name__ == "__main__":
     eng = create_engine(_build_url(cfg), pool_pre_ping=True)
     print("--- Teste de conexão (db.py) ---")
     with eng.connect() as conn:
-        for t in ("precos_marca", "unidades", "consultores", "lancamentos"):
-            n = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
-            print(f"  {t:14}: {n}")
+        for t in ("precos_marca", "unidades", "consultores", "lancamentos",
+                  "lancamentos_historico"):
+            try:
+                n = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+            except Exception:
+                # Só o histórico pode faltar: é opcional até a migração rodar.
+                # O rollback devolve a conexão ao estado usável para o próximo SELECT.
+                conn.rollback()
+                n = "ausente (rode aplicar_migracao_historico.py)"
+            print(f"  {t:21}: {n}")
         s = conn.execute(text("SELECT ROUND(SUM(total_geral), 2) FROM vw_base_tidy")).scalar()
         print(f"  faturamento (view): {s}")
     print("Conexão e leitura OK.")

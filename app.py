@@ -1166,6 +1166,29 @@ def gerar_excel_historico(h, filtros_txt):
     return buf.getvalue()
 
 
+def _historico_indisponivel(erro):
+    """Explica POR QUE o histórico não abriu, em vez do genérico "verifique a
+    conexão". O diagnóstico mostra em qual banco o app está falando: é isso que
+    diferencia "banco errado" de "a migração não rodou aqui"."""
+    diag = db.diagnostico_historico()
+    view_ok = not isinstance(diag.get("vw_lancamentos_historico"), str)
+    if not view_ok:
+        st.warning(
+            f"A view `vw_lancamentos_historico` não existe no banco **{diag.get('banco')}** "
+            f"em `{diag.get('servidor')}` — é outro banco, ou a migração não rodou nele. "
+            "Rode `python aplicar_migracao_historico.py` apontando para ESTE banco.")
+    elif erro is not None:
+        st.error("A view existe, mas a leitura falhou. O erro está no diagnóstico abaixo.")
+    else:
+        st.info("O histórico está vazio: nenhum lançamento registrado neste banco ainda.")
+    with st.expander("🔎 Diagnóstico", expanded=True):
+        st.dataframe(pd.DataFrame({"item": list(diag.keys()),
+                                   "valor": [str(v) for v in diag.values()]}),
+                     use_container_width=True, hide_index=True)
+        if erro is not None:
+            st.code(f"{type(erro).__name__}: {erro}", language="text")
+
+
 def pagina_historico():
     # Trava redundante ao menu: garante que a página não renderize sem senha.
     if not st.session_state.get("lanc_ok"):
@@ -1178,14 +1201,11 @@ def pagina_historico():
                "anterior — ou seja, o que foi vendido naquela semana.")
 
     try:
-        h = db.ler_historico_lancamentos()
-    except Exception:
-        st.error("Não foi possível ler o histórico. Verifique a conexão com o banco.")
-        return
-    if h.empty:
-        st.warning("O histórico ainda está vazio ou não foi criado neste banco. "
-                   "Rode `python aplicar_migracao_historico.py` uma vez para criar a "
-                   "tabela e carregar os lançamentos que já existem.")
+        h, erro = db.ler_historico_lancamentos(), None
+    except Exception as e:
+        h, erro = pd.DataFrame(), e
+    if erro is not None or h.empty:
+        _historico_indisponivel(erro)
         return
 
     h = h.copy()
