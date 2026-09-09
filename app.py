@@ -53,7 +53,10 @@ PAG_VERBAS = "Verbas"
 PAG_GERENTE = "Relatório Por Gerente"
 PAG_CONSULTOR = "Relatório Por Consultor"
 PAG_LANCAMENTO = "📝 Lançamento"
+PAG_HISTORICO = "🗂️ Histórico"
 PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_GERENTE, PAG_CONSULTOR, PAG_VERBAS]
+# Páginas que só entram no menu depois da senha (mesmo cadeado, sem senha nova).
+PAGINAS_RESTRITAS = [PAG_LANCAMENTO, PAG_HISTORICO]
 
 SENHA_LANCAMENTO = "Dahruj00$"   # pode ser trocada em secrets: [acesso] senha_lancamento
 _TTL_LANCAMENTO = 30 * 60        # segundos de inatividade até travar de novo
@@ -972,7 +975,9 @@ def pagina_lancamento():
     existente = db.obter_lancamento(cons["id"], mes, uni["id"])
     if existente:
         st.info(f"Já existe lançamento para **{nome_cons}** em **{label_sel}**. "
-                "Os valores abaixo estão preenchidos e serão atualizados ao salvar.")
+                "Os valores abaixo estão preenchidos e serão atualizados ao salvar. "
+                "Informe o **acumulado do mês** — o lançamento anterior fica guardado "
+                "em 🗂️ Histórico, então a diferença entre eles é a venda da semana.")
     def_pass = int(existente["passagens"]) if existente and existente["passagens"] is not None else 0
     def_rd = int(existente["refil_diant"]) if existente else 0
     def_rt = int(existente["refil_tras"]) if existente else 0
@@ -1011,15 +1016,16 @@ def pagina_lancamento():
             st.error("Não foi possível salvar agora. Verifique a conexão com o banco e tente de novo.")
         else:
             st.success(f"Lançamento de **{nome_cons}** em **{label_sel}** salvo! "
-                       f"Faturamento da semana: {fmt_money(tot_g)}.")
+                       f"Faturamento acumulado no mês: {fmt_money(tot_g)}.")
             st.toast("Dados gravados no banco.", icon="✅")
 
     # Excluir lançamento (só aparece quando já existe registro para o consultor/mês)
     if existente:
         with st.expander("Excluir este lançamento"):
-            st.caption("Remove completamente o lançamento deste consultor nesta semana. "
+            st.caption("Remove completamente o lançamento deste consultor neste mês. "
                        "Use apenas se foi inserido por engano — não pode ser desfeito. "
-                       "Para apenas corrigir um valor, basta editar acima e salvar.")
+                       "Para apenas corrigir um valor, basta editar acima e salvar. "
+                       "A exclusão fica registrada em 🗂️ Histórico.")
             ok = st.checkbox("Confirmo que quero excluir", key=f"conf_{chave}")
             if st.button("Excluir lançamento", disabled=not ok, key=f"del_{chave}"):
                 try:
@@ -1027,8 +1033,225 @@ def pagina_lancamento():
                 except Exception:
                     st.error("Não foi possível excluir agora. Verifique a conexão e tente de novo.")
                 else:
-                    st.success(f"Lançamento de **{nome_cons}** na semana **{label_sel}** excluído.")
+                    st.success(f"Lançamento de **{nome_cons}** em **{label_sel}** excluído.")
                     st.toast("Lançamento removido.", icon="🗑️")
+
+
+# ============================ PÁGINA: HISTÓRICO ============================
+# A tela de Lançamento sobrescreve o mês (o valor vale o acumulado mais recente),
+# então o dashboard nunca mostra quanto foi vendido em CADA semana. Esta página é
+# a trilha por trás disso: um registro por gravação, com o número do lançamento
+# no mês e a diferença para o anterior — a venda daquele período.
+COLS_HISTORICO = [
+    ("n_lancamento", "Nº", "int"),
+    ("registrado_em", "Registrado em", "datahora"),
+    ("tipo", "Tipo", "texto"),
+    ("consultor", "Consultor", "texto"),
+    ("unidade", "Unidade", "texto"),
+    ("marca", "Marca", "texto"),
+    ("mes_lbl", "Mês", "texto"),
+    ("passagens_periodo", "Passagens no período", "int"),
+    ("refil_diant_periodo", "Refil D. no período", "int"),
+    ("refil_tras_periodo", "Refil T. no período", "int"),
+    ("total_periodo", "Faturamento do período", "money"),
+    ("passagens", "Passagens (acum.)", "int"),
+    ("refil_diant", "Refil D. (acum.)", "int"),
+    ("refil_tras", "Refil T. (acum.)", "int"),
+    ("aproveitamento", "Aprov. (acum.)", "pct"),
+    ("total_geral", "Faturamento acum.", "money"),
+    ("origem", "Origem", "texto"),
+]
+
+_TIPO_LABEL = {"lancamento": "Lançamento", "exclusao": "Exclusão"}
+
+
+def gerar_excel_historico(h, filtros_txt):
+    """Excel do histórico: aba 1 evento a evento, aba 2 o pivot semanal.
+    Mesmo padrão de formatação dos outros exports (ver gerar_excel_ranking)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    NAVY, WHITE = "FF1F3864", "FFFFFFFF"
+    thin = Side(style="thin", color="FFD9D9D9")
+    BD = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def _v(x):  # NaN -> None (célula vazia em vez de "nan")
+        return None if (isinstance(x, float) and pd.isna(x)) else x
+
+    def cab(ws, headers, row):
+        for j, hh in enumerate(headers, 1):
+            c = ws.cell(row, j, hh)
+            c.font = Font(name="Arial", bold=True, color=WHITE, size=10)
+            c.fill = PatternFill("solid", fgColor=NAVY)
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            c.border = BD
+
+    FORMATO = {"int": "#,##0", "money": "R$ #,##0.00", "pct": "0.0%",
+               "datahora": "dd/mm/yyyy hh:mm", "texto": None}
+
+    wb = Workbook()
+
+    # ---- Aba 1: um evento por linha ----
+    ws = wb.active
+    ws.title = "Histórico"
+    ws.cell(1, 1, "Histórico de Lançamentos — Dahruj").font = \
+        Font(name="Arial", bold=True, size=14, color=NAVY)
+    for r, txt in ((2, f"Filtros: {filtros_txt}"),
+                   (3, f"Gerado em: {dt.datetime.now().strftime('%d/%m/%Y %H:%M')}"),
+                   (4, "Nº = ordem do lançamento dentro do mês (por consultor e unidade). "
+                       "'no período' = diferença para o lançamento anterior.")):
+        ws.cell(r, 1, txt).font = Font(name="Arial", size=9, color="FF666666")
+
+    H = 6
+    cab(ws, [rot for _, rot, _ in COLS_HISTORICO], H)
+    for i, (_, row) in enumerate(h.iterrows()):
+        r = H + 1 + i
+        for j, (col, _, tipo) in enumerate(COLS_HISTORICO, 1):
+            valor = row[col]
+            if col == "tipo":
+                valor = _TIPO_LABEL.get(valor, valor)
+            elif tipo == "datahora":
+                valor = pd.Timestamp(valor).to_pydatetime()
+            c = ws.cell(r, j, _v(valor))
+            c.font = Font(name="Arial", size=10)
+            c.border = BD
+            if FORMATO[tipo]:
+                c.number_format = FORMATO[tipo]
+            if tipo in ("int", "datahora"):
+                c.alignment = Alignment(horizontal="center")
+        # Exclusão em vermelho: é o evento que zera o mês, tem que saltar aos olhos.
+        if row["tipo"] == "exclusao":
+            for j in range(1, len(COLS_HISTORICO) + 1):
+                ws.cell(r, j).font = Font(name="Arial", size=10, color="FFC00000")
+        elif i % 2 == 1:
+            for j in range(1, len(COLS_HISTORICO) + 1):
+                ws.cell(r, j).fill = PatternFill("solid", fgColor="FFF4F6FA")
+    for j, (col, rot, _) in enumerate(COLS_HISTORICO, 1):
+        largura = 22 if col in ("consultor", "unidade", "registrado_em") else max(11, len(rot) + 2)
+        ws.column_dimensions[get_column_letter(j)].width = largura
+    ws.freeze_panes = f"A{H + 1}"
+
+    # ---- Aba 2: faturamento por período (consultor × nº do lançamento) ----
+    # É a leitura semanal: cada coluna é uma "semana" (o 1º, 2º, 3º lançamento).
+    ws2 = wb.create_sheet("Semanal")
+    lanc = h[h["tipo"] == "lancamento"]
+    if not lanc.empty:
+        IDX = ["mes", "mes_lbl", "consultor", "unidade"]
+        piv = lanc.pivot_table(index=IDX, columns="n_lancamento", values="total_periodo",
+                               aggfunc="sum").reset_index().sort_values(["mes", "consultor"])
+        # O que sobra depois do índice são os nºs de lançamento — uma coluna por
+        # "semana". Selecionar por exclusão evita depender do dtype do rótulo.
+        nums = sorted(c for c in piv.columns if c not in IDX)
+        head2 = ["Mês", "Consultor", "Unidade"] + [f"Lanç. {int(n)}" for n in nums] + ["Total do mês"]
+        cab(ws2, head2, 1)
+        for i, (_, row) in enumerate(piv.iterrows()):
+            r = 2 + i
+            vals = [row["mes_lbl"], row["consultor"], row["unidade"]] + \
+                   [row[n] for n in nums] + [sum(row[n] for n in nums if pd.notna(row[n]))]
+            for j, v in enumerate(vals, 1):
+                c = ws2.cell(r, j, _v(v))
+                c.font = Font(name="Arial", size=10, bold=(j == len(vals)))
+                c.border = BD
+                if j > 3:
+                    c.number_format = "R$ #,##0.00"
+        for j, w in enumerate([12, 26, 22] + [15] * (len(nums) + 1), 1):
+            ws2.column_dimensions[get_column_letter(j)].width = w
+        ws2.freeze_panes = "D2"
+    else:
+        ws2.cell(1, 1, "Nenhum lançamento no recorte selecionado.")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def pagina_historico():
+    # Trava redundante ao menu: garante que a página não renderize sem senha.
+    if not st.session_state.get("lanc_ok"):
+        st.error("Área restrita. Libere o acesso no cadeado da barra lateral.")
+        return
+    st.title("🗂️ Histórico de lançamentos")
+    st.caption("Todo lançamento gravado fica registrado aqui, inclusive os que foram "
+               "sobrescritos. **Nº** é a ordem do lançamento dentro do mês (por consultor "
+               "e unidade) e as colunas *no período* são a diferença para o lançamento "
+               "anterior — ou seja, o que foi vendido naquela semana.")
+
+    try:
+        h = db.ler_historico_lancamentos()
+    except Exception:
+        st.error("Não foi possível ler o histórico. Verifique a conexão com o banco.")
+        return
+    if h.empty:
+        st.warning("O histórico ainda está vazio ou não foi criado neste banco. "
+                   "Rode `python aplicar_migracao_historico.py` uma vez para criar a "
+                   "tabela e carregar os lançamentos que já existem.")
+        return
+
+    h = h.copy()
+    h["mes_lbl"] = h["mes"].apply(mlabel)
+
+    # ---- Filtros ----
+    meses_ord = sorted(h["mes"].unique(), reverse=True)
+    labels_ord = [mlabel(m) for m in meses_ord]
+    c1, c2, c3, c4 = st.columns([1.2, 1.4, 1.4, 1])
+    sel_meses = c1.multiselect("Mês", labels_ord, default=labels_ord[:1])
+    sel_unis = c2.multiselect("Unidade", sorted(h["unidade"].dropna().unique()))
+    sel_cons = c3.multiselect("Consultor", sorted(h["consultor"].dropna().unique()))
+    so_lanc = c4.checkbox("Ocultar exclusões", value=False)
+
+    f = h[h["mes_lbl"].isin(sel_meses)] if sel_meses else h
+    if sel_unis:
+        f = f[f["unidade"].isin(sel_unis)]
+    if sel_cons:
+        f = f[f["consultor"].isin(sel_cons)]
+    if so_lanc:
+        f = f[f["tipo"] == "lancamento"]
+    f = f.sort_values(["mes", "consultor", "unidade", "registrado_em"])
+
+    if f.empty:
+        st.warning("Nenhum registro para os filtros selecionados.")
+        return
+
+    # ---- Resumo + exportação (refletem os filtros atuais) ----
+    lanc = f[f["tipo"] == "lancamento"]
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Lançamentos", fmt_int(len(lanc)))
+    k2.metric("Consultores", fmt_int(f["consultor"].nunique()))
+    k3.metric("Máx. lançamentos/mês", fmt_int(lanc["n_lancamento"].max()) if not lanc.empty else "—")
+    k4.metric("Faturamento no recorte", fmt_money(lanc["total_periodo"].sum()))
+
+    partes = []
+    if sel_meses:
+        partes.append("Meses: " + ", ".join(sel_meses))
+    if sel_unis:
+        partes.append("Unidades: " + ", ".join(sel_unis))
+    if sel_cons:
+        partes.append("Consultores: " + ", ".join(sel_cons))
+    filtros_txt = " · ".join(partes) if partes else "Todos"
+    _, colexp = st.columns([3, 1])
+    colexp.download_button(
+        "📥 Exportar histórico (Excel)",
+        data=gerar_excel_historico(f, filtros_txt),
+        file_name=f"Historico_Lancamentos_Dahruj_{dt.date.today().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+    # ---- Tabela ----
+    FMT = {"int": fmt_int, "money": fmt_money, "pct": fmt_pct,
+           "texto": lambda v: v,
+           "datahora": lambda v: pd.Timestamp(v).strftime("%d/%m/%Y %H:%M")}
+    linhas = []
+    for _, r in f.iterrows():
+        linha = {}
+        for col, rot, tipo in COLS_HISTORICO:
+            linha[rot] = _TIPO_LABEL.get(r[col], r[col]) if col == "tipo" else FMT[tipo](r[col])
+        linhas.append(linha)
+    st.dataframe(pd.DataFrame(linhas), use_container_width=True, hide_index=True)
+    st.caption("O Dashboard mostra apenas o acumulado mais recente de cada mês — é aqui "
+               "que ficam os valores intermediários. Uma linha *Exclusão* zera o mês: a "
+               "diferença dela é negativa e o lançamento seguinte volta a contar do zero.")
 
 
 # ======================= PÁGINA: RELATÓRIO SEMANAL =======================
@@ -1355,10 +1578,10 @@ _ir_para_lanc = st.session_state.pop("lanc_ir", False)
 _liberado = _revalidar_acesso()
 if _liberado and _ir_para_lanc:
     st.session_state["menu_pagina"] = PAG_LANCAMENTO
-elif not _liberado and st.session_state.get("menu_pagina") == PAG_LANCAMENTO:
+elif not _liberado and st.session_state.get("menu_pagina") in PAGINAS_RESTRITAS:
     st.session_state["menu_pagina"] = PAG_DASHBOARD
 
-opcoes = PAGINAS_PUBLICAS + ([PAG_LANCAMENTO] if _liberado else [])
+opcoes = PAGINAS_PUBLICAS + (PAGINAS_RESTRITAS if _liberado else [])
 pagina = st.sidebar.radio("Menu", opcoes, key="menu_pagina")
 st.sidebar.divider()
 
@@ -1368,6 +1591,7 @@ DESTINOS = {
     PAG_GERENTE: pagina_relatorio_semanal,
     PAG_CONSULTOR: pagina_relatorio_consultor,
     PAG_LANCAMENTO: pagina_lancamento,
+    PAG_HISTORICO: pagina_historico,
 }
 try:
     DESTINOS.get(pagina, pagina_dashboard)()
