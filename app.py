@@ -556,16 +556,20 @@ VERBAS_CATS = [("consultor", "Consultor", "total_consultor"),
 OPCAO_ANO = "Ano todo"
 
 
-def _resumo_verbas(df, pagos):
+def _resumo_verbas(df, pagos, mkt_pagos, meses):
     """Verba gerada, paga e saldo do recorte `df`, por categoria e no total.
 
-    Paga = só as categorias marcadas em `verbas_pagamentos`, mês a mês. Cada
-    categoria tem sua própria marcação, então um mês pode ter consultor pago e
-    gerente em aberto.
+    Consultor e gerente: pagos por mês inteiro, então "paga" soma só o que está
+    marcado em `verbas_pagamentos`. Cada categoria tem sua própria marcação —
+    um mês pode ter consultor pago e gerente em aberto.
 
-    Marketing nunca entra em "paga": a reserva não é paga a ninguém, é sempre
-    saldo. É isso que faz Janeiro entrar inteiro no saldo — naquele mês nada foi
-    pago a consultor nem a gerente, tudo virou marketing.
+    Marketing: a reserva não é paga a ninguém, é um caixa que se acumula e é
+    gasto em eventos. O que sai do saldo é o VALOR lançado na aba
+    `VERBAS DE MARKETING` da planilha, mês a mês (`mkt_pagos`).
+
+    `meses` são os meses do período exibido (Timestamps no 1º dia). Vem de fora
+    porque um pagamento de marketing pode cair num mês sem nenhuma venda — e
+    esse mês não apareceria em `df`.
     """
     gerada = {cat: float(df[col].sum()) for cat, _, col in VERBAS_CATS}
     paga = {cat: 0.0 for cat, _, _ in VERBAS_CATS}
@@ -579,6 +583,10 @@ def _resumo_verbas(df, pagos):
             if flags.get("gerente"):
                 paga["gerente"] += float(g["total_gerente"].sum())
 
+    paga["marketing"] = sum(float(mkt_pagos.get(pd.Timestamp(m), 0.0)) for m in meses)
+
+    # O saldo de marketing pode ficar NEGATIVO num mês: o gasto sai do caixa
+    # acumulado, então um evento caro consome o que sobrou dos meses anteriores.
     saldo = {cat: gerada[cat] - paga[cat] for cat, _, _ in VERBAS_CATS}
     for d in (gerada, paga, saldo):
         d["total"] = sum(d[cat] for cat, _, _ in VERBAS_CATS)
@@ -600,6 +608,7 @@ def _status_mes(mes, pagos, tem_dado):
 XLSX_COLS = [("mes", "Mês", 14), ("fat", "Faturamento", 16),
              ("c", "Verba Consultor", 16), ("g", "Verba Gerente", 16),
              ("m", "Verba Marketing", 16), ("total", "Total Verbas", 16),
+             ("mkt_pago", "Marketing Pago", 16), ("saldo_m", "Saldo Marketing", 16),
              ("status", "Status", 12)]
 
 
@@ -649,7 +658,7 @@ def pagina_verbas():
     st.title("💰 Verbas — Saldo e Pagamentos")
     # Dois erros diferentes, duas mensagens: tratar tudo como "falha de conexão"
     # já mascarou um deploy em que o app.py novo subiu sem o db.py novo.
-    if not hasattr(db, "ler_vendas_verbas"):
+    if not hasattr(db, "ler_vendas_verbas") or not hasattr(db, "ler_pagamentos_marketing"):
         st.error("O `db.py` publicado está desatualizado: faltam as funções de "
                  "leitura da base de verbas. Suba a versão nova do `db.py` junto "
                  "com o `app.py` e reinicie o app.")
@@ -657,6 +666,7 @@ def pagina_verbas():
     try:
         df = db.ler_vendas_verbas()
         pagos = db.ler_pagamentos_verba()
+        mkt_pagos = db.ler_pagamentos_marketing()
     except Exception as e:
         st.error("Não foi possível conectar ao banco de dados no momento. "
                  "Verifique se o MySQL está ativo e tente novamente.")
@@ -670,12 +680,17 @@ def pagina_verbas():
         return
 
     # ---- Filtro: ano + mês (o mês manda nos cards e no bloco de verbas) ----
-    anos = sorted(df["data"].dt.year.unique(), reverse=True)
+    # Os meses de pagamento de marketing entram nas listas junto com os de venda:
+    # um evento pode ser pago num mês sem venda nenhuma, e esse mês precisa ser
+    # alcançável no filtro — senão o gasto só apareceria no "Ano todo".
+    anos = sorted(set(df["data"].dt.year) | {m.year for m in mkt_pagos}, reverse=True)
     cano, cmes, _ = st.columns([1, 2, 3])
     ano = cano.selectbox("Ano", anos, index=0)
 
     do_ano = df[df["data"].dt.year == ano]
-    meses_disp = sorted(do_ano["data"].dt.to_period("M").unique(), reverse=True)
+    meses_disp = sorted(set(do_ano["data"].dt.to_period("M"))
+                        | {pd.Period(m, "M") for m in mkt_pagos if m.year == ano},
+                        reverse=True)
     labels = [OPCAO_ANO] + [mlabel(m.start_time) for m in meses_disp]
     mes_lbl = cmes.selectbox(
         "📅 Mês", labels, index=0,
@@ -685,10 +700,12 @@ def pagina_verbas():
     if mes_lbl == OPCAO_ANO:
         rec = do_ano
         periodo, anterior = f"{ano}", None
+        meses_sel = [pd.Timestamp(ano, num, 1) for num in range(1, 13)]
     else:
         p = meses_disp[labels.index(mes_lbl) - 1]
         rec = do_ano[do_ano["data"].dt.to_period("M") == p]
         periodo = mes_lbl
+        meses_sel = [pd.Timestamp(p.start_time)]
         # Mês anterior para o delta — pode não existir (primeiro mês da base).
         ant_p = p - 1
         prev = df[df["data"].dt.to_period("M") == ant_p]
@@ -729,7 +746,7 @@ def pagina_verbas():
     st.divider()
 
     # ---- Verba gerada / paga / saldo ----
-    gerada, paga, saldo = _resumo_verbas(rec, pagos)
+    gerada, paga, saldo = _resumo_verbas(rec, pagos, mkt_pagos, meses_sel)
 
     st.subheader(f"Verba gerada — {periodo}")
     # key= gera a classe .st-key-verba_gerada, usada no CSS para reduzir a fonte
@@ -744,8 +761,10 @@ def pagina_verbas():
     cp = st.columns(4)
     cp[0].metric("Consultor", fmt_money(paga["consultor"]))
     cp[1].metric("Gerente", fmt_money(paga["gerente"]))
-    cp[2].metric("Marketing", "—", help="A reserva de marketing não é paga a "
-                                        "ninguém: entra inteira no saldo.")
+    cp[2].metric("Marketing", fmt_money(paga["marketing"]),
+                 help="Pagamentos lançados na aba 'VERBAS DE MARKETING' da "
+                      "planilha, no mês do pagamento. A reserva não é paga a "
+                      "ninguém: fica acumulada até ser usada num evento.")
     cp[3].metric("Total pago", fmt_money(paga["total"]))
 
     st.subheader("Saldo de verba")
@@ -756,21 +775,32 @@ def pagina_verbas():
 
     with st.expander("Como o saldo é calculado"):
         em_aberto = []
-        for p in sorted(rec["data"].dt.to_period("M").unique()):
-            flags = pagos.get(pd.Timestamp(p.start_time), {})
-            g = rec[rec["data"].dt.to_period("M") == p]
+        for mes in sorted(meses_sel):
+            g = rec[rec["data"].dt.to_period("M") == pd.Period(mes, "M")]
+            pago_mkt = float(mkt_pagos.get(mes, 0.0))
+            if g.empty and not pago_mkt:
+                continue
+            flags = pagos.get(mes, {})
             partes = []
             if not flags.get("consultor"):
                 partes.append(f"consultor {fmt_money(g['total_consultor'].sum())}")
             if not flags.get("gerente"):
                 partes.append(f"gerente {fmt_money(g['total_gerente'].sum())}")
-            partes.append(f"marketing {fmt_money(g['total_reserva'].sum())}")
-            em_aberto.append(f"- **{mlabel(p.start_time)}**: " + " · ".join(partes))
+            mkt = f"marketing {fmt_money(g['total_reserva'].sum())}"
+            if pago_mkt:
+                mkt += f" − pago {fmt_money(pago_mkt)}"
+            partes.append(mkt)
+            em_aberto.append(f"- **{mlabel(mes)}**: " + " · ".join(partes))
         st.markdown(
             "**Saldo = verba gerada − verba paga**, mês a mês e por categoria.\n\n"
-            "A verba de Marketing é paga separadamente para ser usada em eventos "
-            "estratégicos de marketing. Consultor e gerente só saem do saldo nos "
-            "meses marcados como pagos na aba **Pagamentos** da planilha.\n\n"
+            "Consultor e gerente só saem do saldo nos meses marcados como pagos "
+            "na aba **Pagamentos** da planilha.\n\n"
+            "A verba de Marketing é um caixa que se acumula para ser usada em "
+            "eventos estratégicos: ela sai do saldo pelo **valor** lançado na aba "
+            "**VERBAS DE MARKETING** (colunas `Mês do pgto` e `valor`), no mês do "
+            "pagamento. Um evento pode consumir mais do que o mês gerou — aí o "
+            "saldo daquele mês fica negativo, porque o gasto saiu do acumulado "
+            "dos meses anteriores.\n\n"
             "Composição do saldo no período exibido:\n\n" + "\n".join(em_aberto))
     st.divider()
 
@@ -779,27 +809,34 @@ def pagina_verbas():
     por_mes = do_ano.groupby(do_ano["data"].dt.month)
     # `brutos` guarda os valores como número; a tela formata e o .xlsx exporta o
     # número puro. Uma fonte só para os dois, para não divergirem.
-    brutos, totais = [], dict(fat=0.0, c=0.0, g=0.0, m=0.0)
+    brutos, totais = [], dict(fat=0.0, c=0.0, g=0.0, m=0.0, mkt_pago=0.0)
     for num in range(1, 13):
         tem = num in por_mes.groups
         gr = por_mes.get_group(num) if tem else None
+        # O pagamento de marketing é somado mesmo num mês sem venda: o gasto é do
+        # caixa acumulado, não daquele mês. Sem isso ele sumiria da tabela.
+        pago_mkt = float(mkt_pagos.get(pd.Timestamp(ano, num, 1), 0.0))
         vals = {
             "fat": float(gr["total_item"].sum()) if tem else None,
             "c": float(gr["total_consultor"].sum()) if tem else None,
             "g": float(gr["total_gerente"].sum()) if tem else None,
             "m": float(gr["total_reserva"].sum()) if tem else None,
+            "mkt_pago": pago_mkt if pago_mkt else None,
         }
         if tem:
-            for chave in totais:
+            for chave in ("fat", "c", "g", "m"):
                 totais[chave] += vals[chave]
+        totais["mkt_pago"] += pago_mkt
         brutos.append({
             "mes": MESES_PT[num], **vals,
             "total": vals["c"] + vals["g"] + vals["m"] if tem else None,
+            "saldo_m": (vals["m"] or 0.0) - pago_mkt if (tem or pago_mkt) else None,
             "status": _status_mes(dt.date(ano, num, 1), pagos, tem),
         })
     brutos.append({
         "mes": "TOTAL", **totais,
-        "total": totais["c"] + totais["g"] + totais["m"], "status": "",
+        "total": totais["c"] + totais["g"] + totais["m"],
+        "saldo_m": totais["m"] - totais["mkt_pago"], "status": "",
     })
 
     linhas = [{rotulo: (b[chave] if chave in ("mes", "status")
@@ -807,7 +844,10 @@ def pagina_verbas():
                for chave, rotulo, _ in XLSX_COLS} for b in brutos]
     st.dataframe(pd.DataFrame(linhas), width="stretch", hide_index=True)
     st.caption("“Pago” = verba de consultor E de gerente já quitadas naquele mês "
-               "(marcação da aba Pagamentos). “Parcial” = só uma das duas.")
+               "(marcação da aba Pagamentos). “Parcial” = só uma das duas. · "
+               "**Marketing Pago** vem da aba *VERBAS DE MARKETING* e **Saldo "
+               "Marketing** é o que sobrou no mês (negativo = o evento consumiu "
+               "verba acumulada dos meses anteriores).")
     st.download_button(
         "Exportar relatório (.xlsx)", _xlsx_verbas_mes(brutos, ano),
         file_name=f"verbas_mes_a_mes_{ano}.xlsx",
@@ -816,7 +856,9 @@ def pagina_verbas():
              "(prontos para somar e ordenar), não como texto.")
 
     # ---- Gráfico: 3 verbas mês a mês ----
-    st.subheader("Evolução das verbas")
+    # Só verba GERADA: o pagamento de marketing fica na tabela acima, para não
+    # misturar num mesmo grupo de barras duas coisas de naturezas diferentes.
+    st.subheader("Evolução das verbas geradas")
     dados = []
     for num in range(1, 13):
         gr = por_mes.get_group(num) if num in por_mes.groups else None

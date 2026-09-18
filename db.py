@@ -140,6 +140,29 @@ def ler_pagamentos_verba():
 
 
 @st.cache_data(ttl=60)
+def ler_pagamentos_marketing():
+    """Verba de marketing paga por mês: {Timestamp(1º dia do mês): valor}.
+
+    Consultor e gerente são pagos por mês inteiro (daí o SIM/NÃO de
+    `verbas_pagamentos`); marketing é um caixa acumulado, gasto em pedaços — por
+    isso aqui vem VALOR, da tabela `verbas_marketing_pagos`.
+
+    Alimentada pela aba `VERBAS DE MARKETING` do Excel via `importar_verbas.py`.
+    Mês ausente = nada pago naquele mês. Devolve {} se a tabela ainda não existir,
+    para o app mostrar saldo cheio em vez de estourar erro de conexão.
+    """
+    eng = get_engine()
+    try:
+        with eng.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT mes, valor FROM verbas_marketing_pagos"
+            )).mappings().all()
+    except Exception:
+        return {}
+    return {pd.Timestamp(r["mes"]): float(r["valor"]) for r in rows}
+
+
+@st.cache_data(ttl=60)
 def ler_historico_lancamentos():
     """Trilha de TODOS os lançamentos já gravados (a página "Histórico" lê daqui).
 
