@@ -2,6 +2,12 @@
 Importador da base de verbas: Excel -> MySQL (tabelas `vendas_verbas` e
 `verbas_pagamentos`, que alimentam a aba "Verbas" do dashboard).
 
+Esta carga representa SELL IN (provisão), não pagamento. O dashboard cruza
+automaticamente essa base com o SELL OUT de `vw_base_tidy`: consultor/gerente
+pagos = quantidade vendida ao consumidor no mês × tarifa, quando o mês está
+marcado como pago. O restante permanece em estoque ou como Sell Out a pagar.
+Não se deve reduzir as quantidades/valores importados para descontar estoque.
+
 É o passo semanal: toda sexta você atualiza a planilha "Base de dados para Dash
 Board.xlsx" (vendas novas entram no topo, as fórmulas recalculam) e roda este
 script. Ele não faz merge — APAGA e regrava `vendas_verbas` inteira dentro de uma
@@ -16,7 +22,8 @@ Abas lidas da planilha:
                 Se a aba não existir, o script preserva o que já está no banco e
                 avisa — nunca zera em silêncio.
     VERBAS DE MARKETING
-                auxiliar: pagamentos da verba de marketing, colunas
+                auxiliar: pagamentos da verba de marketing. Vale qualquer aba com
+                "marketing" no nome (singular ou plural), colunas
                 `Mês do pgto` e `valor` (uma linha por pagamento; vários
                 pagamentos no mesmo mês são somados). Cada valor é descontado do
                 saldo de marketing no mês correspondente. Mesma regra da aba
@@ -333,16 +340,28 @@ def _valor_brl(v):
         return None
 
 
-def _resolver_aba(path, desejada):
-    """Nome real da aba na planilha, comparando sem acento/caixa/espaço.
+def _resolver_aba_marketing(path):
+    """Nome real da aba de marketing na planilha, ou None se não houver.
 
-    Sem isso, criar a aba como 'Verbas de Marketing' em vez de
-    'VERBAS DE MARKETING' faria o script dizer que ela não existe.
+    Compara sem acento/caixa/espaço e, na falta de um nome exato, aceita
+    QUALQUER aba que fale em marketing. É de propósito: 'VERBA DE MARKETING' e
+    'VERBAS DE MARKETING' são igualmente naturais de digitar, e uma aba não
+    reconhecida deixaria o saldo inflado sem ninguém perceber. Nenhuma outra aba
+    da planilha tem 'marketing' no nome.
     """
-    alvo = _norm_texto(desejada)
-    for nome in pd.ExcelFile(path).sheet_names:
+    abas = pd.ExcelFile(path).sheet_names
+    alvo = _norm_texto(ABA_MARKETING)
+    for nome in abas:
         if _norm_texto(nome) == alvo:
             return nome
+    achadas = [n for n in abas if "MARKETING" in _norm_texto(n)]
+    if len(achadas) == 1:
+        return achadas[0]
+    if achadas:
+        raise SystemExit(
+            f"A planilha tem mais de uma aba com 'marketing' no nome: {achadas}. "
+            f"Deixe só uma (de preferência '{ABA_MARKETING}') e rode de novo."
+        )
     return None
 
 
@@ -356,7 +375,7 @@ def ler_pagamentos_marketing(path):
     Devolve None (não lista vazia) quando a aba não existe: quem chama precisa
     distinguir "não informado, preserve o banco" de "informado e vazio".
     """
-    aba = _resolver_aba(path, ABA_MARKETING)
+    aba = _resolver_aba_marketing(path)
     if aba is None:
         return None
     df = pd.read_excel(path, sheet_name=aba)

@@ -99,15 +99,11 @@ def ler_vendas_verbas():
     Vem de `vendas_verbas`, alimentada por `importar_verbas.py` a partir do Excel
     — não da view `vw_base_tidy`, que é outra base (lançamentos por consultor).
 
-    Devolve DataFrame vazio se a tabela ainda não existir: o app trata isso como
-    "base não importada" em vez de estourar erro de conexão.
+    Falhas de leitura são propagadas: não equivalem a uma base vazia.
     """
     eng = get_engine()
-    try:
-        with eng.connect() as conn:
-            df = pd.read_sql(text("SELECT * FROM vendas_verbas"), conn)
-    except Exception:
-        return pd.DataFrame()
+    with eng.connect() as conn:
+        df = pd.read_sql(text("SELECT * FROM vendas_verbas"), conn)
     if df.empty:
         return df
     df["data"] = pd.to_datetime(df["data"])
@@ -123,17 +119,14 @@ def ler_vendas_verbas():
 def ler_pagamentos_verba():
     """Meses cuja verba já foi paga: {Timestamp(1º dia do mês): {consultor, gerente}}.
 
-    Marketing não entra — a reserva nunca é paga a ninguém, então é sempre saldo.
+    A marcação refere-se ao mês do Sell Out. Marketing usa pagamentos separados.
     Mês ausente do dicionário = nada pago naquele mês.
     """
     eng = get_engine()
-    try:
-        with eng.connect() as conn:
-            rows = conn.execute(text(
-                "SELECT mes, consultor_pago, gerente_pago FROM verbas_pagamentos"
-            )).mappings().all()
-    except Exception:
-        return {}
+    with eng.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT mes, consultor_pago, gerente_pago FROM verbas_pagamentos"
+        )).mappings().all()
     return {pd.Timestamp(r["mes"]): {"consultor": bool(r["consultor_pago"]),
                                      "gerente": bool(r["gerente_pago"])}
             for r in rows}
@@ -148,17 +141,14 @@ def ler_pagamentos_marketing():
     isso aqui vem VALOR, da tabela `verbas_marketing_pagos`.
 
     Alimentada pela aba `VERBAS DE MARKETING` do Excel via `importar_verbas.py`.
-    Mês ausente = nada pago naquele mês. Devolve {} se a tabela ainda não existir,
-    para o app mostrar saldo cheio em vez de estourar erro de conexão.
+    Mês ausente = nada pago naquele mês. Falhas de leitura são propagadas para
+    não inflar o saldo com pagamentos falsamente zerados.
     """
     eng = get_engine()
-    try:
-        with eng.connect() as conn:
-            rows = conn.execute(text(
-                "SELECT mes, valor FROM verbas_marketing_pagos"
-            )).mappings().all()
-    except Exception:
-        return {}
+    with eng.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT mes, valor FROM verbas_marketing_pagos"
+        )).mappings().all()
     return {pd.Timestamp(r["mes"]): float(r["valor"]) for r in rows}
 
 
