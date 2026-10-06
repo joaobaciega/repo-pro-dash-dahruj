@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 import db
-from verbas import CATEGORIAS, calcular_verbas, estoque_por_unidade
+from verbas import CATEGORIAS, calcular_verbas
 
 
 MESES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
@@ -92,112 +92,115 @@ def exportar_excel(tabela, estoque):
     return buf.getvalue()
 
 
+# Lista explícita: o relatório público nunca recebe os campos de estoque ou
+# as planilhas de conferência usadas na área interna.
+COLUNAS_CLIENTE = {
+    "gerada_consultor": "Gerado — Consultor",
+    "gerada_gerente": "Gerado — Gerente",
+    "gerada_marketing": "Gerado — Marketing",
+    "gerada_total": "Total gerado",
+    "paga_consultor": "Pago — Consultor",
+    "paga_gerente": "Pago — Gerente",
+    "paga_marketing": "Pago — Marketing",
+    "paga_total": "Total pago",
+    "acumulado_total": "Saldo de verbas",
+}
+
+
+def tabela_cliente(mensal, ano):
+    rec = mensal.loc[mensal.index.year == ano, list(COLUNAS_CLIENTE)].copy()
+    tabela = rec.copy()
+    tabela.index = [MESES[m.month] for m in rec.index]
+    if not rec.empty:
+        tabela.loc["TOTAL DO ANO / SALDO FINAL"] = {
+            c: rec[c].iloc[-1] if c == "acumulado_total" else rec[c].sum()
+            for c in COLUNAS_CLIENTE
+        }
+    return tabela.rename(columns=COLUNAS_CLIENTE).rename_axis("Mês")
+
+
+def exportar_excel_cliente(tabela):
+    """Exporta exclusivamente os mesmos dados públicos da tabela mensal."""
+    tabela = tabela[list(COLUNAS_CLIENTE.values())]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        tabela.to_excel(writer, sheet_name="Verbas mensais")
+        ws = writer.book["Verbas mensais"]
+        ws.freeze_panes = "B2"
+        ws.auto_filter.ref = ws.dimensions
+        from openpyxl.styles import Font, PatternFill
+        for cel in ws[1]:
+            cel.font = Font(bold=True, color="FFFFFF")
+            cel.fill = PatternFill("solid", fgColor="EB5E33")
+        ws.column_dimensions["A"].width = 34
+        for col in ws.iter_cols(min_col=2):
+            ws.column_dimensions[col[0].column_letter].width = 23
+            for cel in col[1:]:
+                cel.number_format = 'R$ #,##0.00'
+    return buf.getvalue()
+
+
 def pagina_verbas():
-    st.title("💰 Verbas — Estoque, Saldo e Pagamentos")
+    st.title("💰 Verbas")
     try:
         vendas = db.ler_vendas_verbas()
         sell_out = db.ler_base_tidy()
         pagos = db.ler_pagamentos_verba()
         mkt_pagos = db.ler_pagamentos_marketing()
-    except Exception:
-        st.error("Não foi possível ler as bases de Sell In, Sell Out e pagamentos. Tente novamente após verificar a conexão.")
-        return
-    if vendas.empty:
-        st.info("Importe a planilha Base de dados para Dash Board.xlsx com importar_verbas.py para carregar o Sell In.")
-        return
-    if sell_out.empty:
-        st.warning("A base de Sell Out está vazia. Cadastre as vendas ao consumidor para calcular pagamentos e estoque.")
-        return
-    try:
+        if vendas.empty or sell_out.empty:
+            st.info("As informações de verbas ainda não estão disponíveis.")
+            return
         mensal = calcular_verbas(vendas, sell_out, pagos, mkt_pagos)
-    except ValueError as exc:
-        st.error(str(exc))
+    except Exception:
+        st.error("As informações de verbas estão temporariamente indisponíveis. Tente novamente mais tarde.")
         return
-    anos = sorted(set(mensal.index.year), reverse=True)
+
     ca, cm, _ = st.columns([1, 2, 3])
-    ano = ca.selectbox("Ano", anos)
+    ano = ca.selectbox("Ano", sorted(set(mensal.index.year), reverse=True))
     do_ano = mensal[mensal.index.year == ano]
-    opcoes = ["Ano todo"] + [MESES[m.month] for m in reversed(do_ano.index)]
-    escolha = cm.selectbox("📅 Mês", opcoes, help="Os movimentos são do período selecionado; estoques e saldos acumulam todo o histórico até o fim desse período.")
+    escolha = cm.selectbox("📅 Mês", ["Ano todo"] + [MESES[m.month] for m in reversed(do_ano.index)])
     rec = do_ano if escolha == "Ano todo" else do_ano[do_ano.index.month == MESES.index(escolha)]
     fim = rec.index[-1]
     periodo = str(ano) if escolha == "Ano todo" else f"{escolha}/{ano}"
+    fechamento = f"{MESES[fim.month]}/{fim.year}"
     soma, posicao = rec.sum(numeric_only=True), rec.iloc[-1]
-    ultima_in = pd.to_datetime(vendas["data"]).max()
-    ultima_out = pd.to_datetime(sell_out["mes"]).max()
-    st.caption(f"Sell In até {ultima_in:%d/%m/%Y} · Sell Out com lançamentos até {ultima_out:%m/%Y} · exibindo {periodo}. O último mês pode estar parcial.")
-    if ultima_out.to_period("M") < ultima_in.to_period("M"):
-        st.warning("O Sell Out termina antes do Sell In. O estoque calculado pode incluir produtos cujas vendas ao consumidor ainda não foram lançadas.")
-
-    k = st.columns(3)
-    k[0].metric("Faturamento Sell In", dinheiro(soma.faturamento))
-    k[1].metric("Sell In dianteiros (pares)", f"{int(soma.entrada_diant):,}".replace(",", "."))
-    k[2].metric("Sell In traseiros (un)", f"{int(soma.entrada_tras):,}".replace(",", "."))
-    k = st.columns(2)
-    k[0].metric("Sell Out dianteiros (pares)", f"{int(soma.saida_diant):,}".replace(",", "."))
-    k[1].metric("Sell Out traseiros (un)", f"{int(soma.saida_tras):,}".replace(",", "."))
-
-    def valores(titulo, dados, prefixo, total=True):
-        st.subheader(titulo)
-        cols = st.columns(4 if total else 3)
-        for i, cat in enumerate(CATEGORIAS):
-            cols[i].metric(cat.title(), dinheiro(dados[f"{prefixo}_{cat}"]))
-        if total:
-            cols[3].metric("Total", dinheiro(dados[f"{prefixo}_total"]))
+    st.caption(f"Período: {periodo} · Valores em reais. O mês mais recente pode estar em andamento.")
 
     with st.container(key="verba_gerada"):
-        valores(f"Verba provisionada pelo Sell In — {periodo}", soma, "gerada")
-    st.subheader(f"Verba devida pelo Sell Out — {periodo}")
-    c = st.columns(3)
-    c[0].metric("Consultor", dinheiro(soma.realizada_consultor))
-    c[1].metric("Gerente", dinheiro(soma.realizada_gerente))
-    c[2].metric("Total devido", dinheiro(soma.realizada_consultor + soma.realizada_gerente))
-    valores(f"Verba paga — {periodo}", soma, "paga")
-    st.caption("Consultor e gerente: Sell Out × tarifa da planilha, nos meses marcados como pagos. Marketing: valores dos pagamentos lançados.")
-    valores(f"Saldo acumulado até {MESES[fim.month]}/{fim.year}", posicao, "acumulado")
-    st.caption("Consultor e gerente: inclui verba em estoque e verba de vendas ainda não pagas. Marketing: reserva do Sell In menos pagamentos de eventos.")
-    c = st.columns(2)
-    c[0].metric("Consultor a pagar — Sell Out acumulado", dinheiro(posicao.pendente_consultor))
-    c[1].metric("Gerente a pagar — Sell Out acumulado", dinheiro(posicao.pendente_gerente))
+        cards = st.columns(3)
+        cards[0].metric("Verba gerada", dinheiro(soma.gerada_total),
+                        help="Verba gerada pelas compras no período selecionado.")
+        cards[1].metric("Verba paga", dinheiro(soma.paga_total),
+                        help="Pagamentos de consultores, gerentes e marketing no período selecionado.")
+        cards[2].metric("Saldo de verbas", dinheiro(posicao.acumulado_total),
+                        help=f"Total gerado menos pagamentos até {fechamento}, incluindo os períodos anteriores. Não representa apenas valores já devidos para pagamento.")
+    st.caption(f"Gerado e pago referem-se ao período selecionado. O saldo considera todo o histórico até {fechamento}.")
 
-    valores(f"Verba vinculada ao estoque até {MESES[fim.month]}/{fim.year}", posicao, "estoque")
-    c = st.columns(2)
-    c[0].metric("Estoque dianteiros (pares)", int(posicao.estoque_diant))
-    c[1].metric("Estoque traseiros (un)", int(posicao.estoque_tras))
-    st.caption("Estoque acumulado = entradas Sell In − saídas Sell Out. A parcela de marketing em estoque já está incluída na reserva; não é um saldo adicional.")
-    estoque = estoque_por_unidade(vendas, sell_out, fim)
-    if (estoque < 0).any().any() or (mensal.loc[:fim, ["estoque_diant", "estoque_tras"]] < 0).any().any():
-        st.warning("Há saídas superiores às entradas registradas em alguma loja ou mês. Confira estoque inicial, transferências e cobertura das bases. Os saldos negativos foram preservados para conferência.")
-    with st.expander("Estoque por unidade"):
-        st.dataframe(estoque, width="stretch")
-    with st.expander("Como os valores são calculados"):
-        st.markdown(
-            "**Provisão:** quantidades do Sell In × verbas unitárias da planilha.\n\n"
-            "**Devido a consultor/gerente:** quantidades do Sell Out × respectivas tarifas. "
-            "Comprar em janeiro e vender em fevereiro gera pagamento referente a fevereiro.\n\n"
-            "**Pago:** valor devido pelo Sell Out somente nos meses marcados na aba Pagamentos. "
-            "A marcação de janeiro sem Sell Out não gera pagamento.\n\n"
-            "**Saldo acumulado:** provisão de todo o histórico menos pagamentos até o mês selecionado. "
-            "Para consultor/gerente, é a soma da verba em estoque com o Sell Out ainda não pago.\n\n"
-            "**Marketing:** a reserva nasce no Sell In e os gastos são os valores da aba de marketing.\n\n"
-            "O cálculo começa com estoque inicial zero e usa tarifas uniformes por tipo de refil, "
-            "conforme a planilha. Diferenças de tarifa exigem revisão da regra, pois o Sell Out não identifica o SKU."
-        )
+    resumo = pd.DataFrame([
+        {"Categoria": cat.title(), "Gerado no período": soma[f"gerada_{cat}"],
+         "Pago no período": soma[f"paga_{cat}"], "Saldo de verbas": posicao[f"acumulado_{cat}"]}
+        for cat in CATEGORIAS
+    ])
+    st.dataframe(resumo.style.format({c: dinheiro for c in resumo.columns if c != "Categoria"}),
+                 width="stretch", hide_index=True)
+    st.caption("Os pagamentos a consultores e gerentes consideram as vendas ao consumidor. Marketing considera os valores utilizados nas ações realizadas.")
+
     st.subheader(f"Verbas mês a mês — {ano}")
-    tabela = tabela_ano(mensal, ano, pagos)
-    formatos = {COLUNAS[c]: ("{:,.0f}" if c in QUANTIDADES else dinheiro) for c in COLUNAS}
-    st.dataframe(tabela.style.format(formatos), width="stretch")
-    st.caption("A linha TOTAL / POSIÇÃO FINAL soma os movimentos do ano e mostra a última posição de estoque, pendências e saldos, incluindo o histórico anterior ao ano. Meses futuros não são projetados.")
-    estoque_ano = estoque_por_unidade(vendas, sell_out, do_ano.index[-1])
-    st.download_button("Exportar relatório (.xlsx)", exportar_excel(tabela, estoque_ano),
-                       file_name=f"verbas_mes_a_mes_{ano}.xlsx",
+    tabela = tabela_cliente(mensal, ano)
+    st.dataframe(tabela.style.format(dinheiro), width="stretch")
+    st.caption("O saldo de cada mês inclui os períodos anteriores. Na última linha, gerado e pago são os totais do ano; o saldo é a posição ao final do período.")
+    st.download_button("Exportar relatório (.xlsx)", exportar_excel_cliente(tabela),
+                       file_name=f"verbas_{ano}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.subheader("Provisão e pagamentos mês a mês")
+
+    st.subheader("Verba gerada e paga")
     grafico = do_ano[["gerada_total", "paga_total"]].rename(columns={
-        "gerada_total": "Provisionado (Sell In)", "paga_total": "Pago"})
+        "gerada_total": "Gerada", "paga_total": "Paga"})
     grafico.index = [MESES[m.month][:3] for m in grafico.index]
     fig = px.bar(grafico, barmode="group", color_discrete_sequence=["#EB5E33", "#F5A623"])
     fig.update_layout(template="plotly_dark", xaxis_title=None, yaxis_title=None,
                       legend_title=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
     fig.update_yaxes(tickprefix="R$ ")
     st.plotly_chart(fig, width="stretch")
+
+

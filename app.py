@@ -54,9 +54,10 @@ PAG_GERENTE = "Relatório Por Gerente"
 PAG_CONSULTOR = "Relatório Por Consultor"
 PAG_LANCAMENTO = "📝 Lançamento"
 PAG_HISTORICO = "🗂️ Histórico"
+PAG_ESTOQUE = "📦 Estoque"
 PAGINAS_PUBLICAS = [PAG_DASHBOARD, PAG_GERENTE, PAG_CONSULTOR, PAG_VERBAS]
 # Páginas que só entram no menu depois da senha (mesmo cadeado, sem senha nova).
-PAGINAS_RESTRITAS = [PAG_LANCAMENTO, PAG_HISTORICO]
+PAGINAS_RESTRITAS = [PAG_LANCAMENTO, PAG_HISTORICO, PAG_ESTOQUE]
 
 SENHA_LANCAMENTO = "Dahruj00$"   # pode ser trocada em secrets: [acesso] senha_lancamento
 _TTL_LANCAMENTO = 30 * 60        # segundos de inatividade até travar de novo
@@ -540,6 +541,7 @@ def pagina_dashboard():
 
 # A conciliação de Sell In, Sell Out e estoque fica isolada para validação.
 from verbas_pagina import pagina_verbas
+from estoque_pagina import pagina_estoque
 
 
 # ========================= ACESSO AO LANÇAMENTO =========================
@@ -581,7 +583,7 @@ def _revalidar_acesso():
 @st.dialog("Área restrita")
 def _dialogo_senha():
     """Pede a senha. Sem st.rerun(), o diálogo continua aberto com o erro."""
-    st.caption("Informe a senha para liberar a aba de Lançamento.")
+    st.caption("Informe a senha para acessar Lançamento, Histórico e Estoque.")
     with st.form("form_senha_lanc", clear_on_submit=True, border=False):
         senha = st.text_input("Senha", type="password",
                               label_visibility="collapsed", placeholder="Senha")
@@ -611,18 +613,23 @@ def _dialogo_senha():
         st.error(f"Senha incorreta. Tentativa {erros} de {_MAX_TENTATIVAS}.")
 
 
+def _clicar_cadeado():
+    """Bloqueia antes de renderizar a página da próxima execução."""
+    if st.session_state.get("lanc_ok"):
+        _travar_lancamento()
+    else:
+        st.session_state["pedir_senha_restrita"] = True
+
+
 def _barra_acesso():
     """Cadeado discreto no fim da barra lateral. Chamar após montar a página."""
     st.sidebar.divider()
     liberado = bool(st.session_state.get("lanc_ok"))
-    if st.sidebar.button("🔓" if liberado else "🔒", key="btn_cadeado",
-                         type="tertiary",
-                         help="Bloquear Lançamento" if liberado else "Área restrita"):
-        if liberado:
-            _travar_lancamento()
-            st.rerun()
-        else:
-            _dialogo_senha()
+    st.sidebar.button("🔓" if liberado else "🔒", key="btn_cadeado",
+                      type="tertiary", on_click=_clicar_cadeado,
+                      help="Bloquear área restrita" if liberado else "Área restrita")
+    if st.session_state.pop("pedir_senha_restrita", False):
+        _dialogo_senha()
 
 
 # ============================ PÁGINA: LANÇAMENTO ============================
@@ -1315,6 +1322,7 @@ DESTINOS = {
     PAG_CONSULTOR: pagina_relatorio_consultor,
     PAG_LANCAMENTO: pagina_lancamento,
     PAG_HISTORICO: pagina_historico,
+    PAG_ESTOQUE: pagina_estoque,
 }
 try:
     DESTINOS.get(pagina, pagina_dashboard)()

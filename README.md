@@ -4,7 +4,7 @@ App em Streamlit + MySQL:
 - **Dashboard**: acompanhamento trimestral móvel (últimos 3 meses) por consultor,
   unidade e marca, lendo direto do banco.
 - **💰 Verbas**: verba gerada, verba já paga e **saldo** (consultor / gerente /
-  marketing), com conciliação de Sell In, Sell Out e estoque — ver "Aba Verbas".
+  marketing), com três cards e resumo mensal voltados ao cliente.
 - **Relatório Por Gerente** e **Relatório Por Consultor**: rankings do mês.
 - **Lançamento** (acesso restrito): o gestor informa Passagens e Refis por consultor;
   o faturamento é calculado automaticamente e gravado no banco. Ao salvar, o
@@ -13,6 +13,8 @@ App em Streamlit + MySQL:
   lançamentos já gravados, inclusive os que foram sobrescritos, com o número do
   lançamento dentro do mês, a diferença para o anterior (a venda da semana) e
   exportação em Excel. Ver "Histórico de lançamentos".
+- **📦 Estoque** (acesso restrito, mesmo cadeado): posição por loja, entradas e
+  saídas mensais, evolução e divergências para acompanhamento interno.
 
 ## Arquivos
 
@@ -22,7 +24,9 @@ App em Streamlit + MySQL:
 | `seed.py`        | Carga inicial dos dados a partir do Excel (formato tidy).     |
 | `importar_verbas.py` | Carga semanal da aba Verbas a partir da planilha de vendas. |
 | `verbas.py` | Cálculo de provisão, Sell Out, estoque e pagamentos mensais. |
-| `verbas_pagina.py` | Tela de Verbas e exportação Excel da conciliação. |
+| `verbas_pagina.py` | Tela e Excel públicos de Verbas; funções de exportação para conferência interna. |
+| `estoque_pagina.py` | Tela e Excel restritos de estoque, filtros por mês e unidade. |
+| `test_paginas_verbas.py` | Testes de navegação, proteção por senha e separação dos relatórios. |
 | `test_verbas.py` | Testes da metodologia e da exportação (`python -m unittest test_verbas`). |
 | `conferir_verbas.py` | Conferência somente leitura e geração de relatório Excel a partir do SQL. |
 | `db.py`          | Camada de dados: conexão e funções de leitura/gravação.       |
@@ -63,10 +67,11 @@ streamlit run app.py
 Abre em `http://localhost:8501`. O menu lateral alterna entre **Dashboard** e os
 dois relatórios.
 
-## Acesso ao Lançamento
+## Acesso à área restrita
 
-A aba **Lançamento** não aparece no menu. Para abrir, clique no **cadeado 🔒** no
-fim da barra lateral e informe a senha; a aba passa a aparecer no menu.
+As abas **Lançamento**, **Histórico** e **Estoque** só aparecem após clicar no
+**cadeado 🔒** da barra lateral e informar a senha. Bloquear novamente ou deixar
+a sessão expirar remove as três abas e retorna à página pública.
 
 - A senha está em `SENHA_LANCAMENTO`, no topo do `app.py`. Para não deixá-la no
   repositório, basta acrescentar ao `.streamlit/secrets.toml` (que é gitignored) —
@@ -162,8 +167,24 @@ estoques, pendências e saldos acumulados. O filtro de mês não reinicia estoqu
 Os dados acompanham as atualizações das duas bases com o cache existente de 60s.
 Falhas ao ler pagamentos interrompem a tela, para não exibir saldo inflado.
 
-Publique `app.py`, `db.py`, `verbas.py` e `verbas_pagina.py` juntos. Esta correção
+Publique `app.py`, `db.py`, `verbas.py`, `verbas_pagina.py` e `estoque_pagina.py` juntos. Esta correção
 não exige migração nem regravação dos dados de Sell In/Sell Out no SQL.
+
+### Apresentação pública e acompanhamento interno
+
+A aba pública Verbas mostra apenas três cards (gerado, pago e saldo), o resumo
+por categoria e a tabela mensal. Gerado/pago seguem o período selecionado; o
+saldo inclui o histórico até o fim desse período. Os cálculos não mudaram.
+Textos de operação, divergências e detalhes de estoque não aparecem nessa tela
+nem no Excel público, que exporta exclusivamente as colunas da tabela mensal.
+
+Na aba restrita **Estoque**, selecione ano, mês e unidades (nenhuma seleção =
+todas). A tela mostra saldo inicial, entradas, saídas e saldo final por tipo,
+evolução mensal, verba associada ao estoque e alertas de conferência. A planilha
+de estoque acompanha os filtros da tela. O saldo inicial carrega todo o histórico
+anterior ao mês, inclusive anos anteriores.
+
+Validação: `python -m unittest test_verbas test_paginas_verbas`.
 
 Para conferir com o Aiven sem alterar o banco:
 

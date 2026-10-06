@@ -101,3 +101,24 @@ def estoque_por_unidade(vendas, sell_out, ate):
         saida = s.groupby("unidade")[f"refil_{tipo}"].sum()
         estoque[rotulo] = entrada.reindex(unidades, fill_value=0) - saida.reindex(unidades, fill_value=0)
     return estoque.astype(int)
+
+
+def movimentacao_por_unidade(vendas, sell_out, mes):
+    """Estoque inicial + entradas − saídas = estoque final, por loja e tipo."""
+    periodo = pd.Period(mes, "M")
+    atual = estoque_por_unidade(vendas, sell_out, periodo.start_time)
+    anterior = estoque_por_unidade(vendas, sell_out, (periodo - 1).start_time)
+    v, s = vendas.copy(), sell_out.copy()
+    v = v[pd.to_datetime(v["data"]).dt.to_period("M") == periodo]
+    s = s[pd.to_datetime(s["mes"]).dt.to_period("M") == periodo]
+    v["unidade"] = v["cliente"].map(_chave_unidade)
+    s["unidade"] = s["unidade"].map(_chave_unidade)
+    resultado = pd.DataFrame(index=atual.index)
+    for tipo, rotulo in (("diant", "Dianteiros (pares)"), ("tras", "Traseiros (un)")):
+        entrada = v[v["tipo_refil"] == tipo].groupby("unidade")["qtde"].sum()
+        saida = s.groupby("unidade")[f"refil_{tipo}"].sum()
+        resultado[f"inicial_{tipo}"] = anterior[rotulo].reindex(atual.index, fill_value=0)
+        resultado[f"entrada_{tipo}"] = entrada.reindex(atual.index, fill_value=0)
+        resultado[f"saida_{tipo}"] = saida.reindex(atual.index, fill_value=0)
+        resultado[f"estoque_{tipo}"] = atual[rotulo]
+    return resultado.astype(int)
