@@ -122,3 +122,44 @@ def movimentacao_por_unidade(vendas, sell_out, mes):
         resultado[f"saida_{tipo}"] = saida.reindex(atual.index, fill_value=0)
         resultado[f"estoque_{tipo}"] = atual[rotulo]
     return resultado.astype(int)
+
+
+def reposicao_por_unidade(vendas, sell_out, ate):
+    """Compara estoque com a média de todos os meses registrados por loja.
+
+    A base tidy contém o acumulado vigente por consultor/mês. Primeiro somamos
+    os consultores; depois calculamos a média mensal, sem somar versões da
+    trilha de alterações. Meses registrados com zero entram na média; ausência
+    de lançamento não é interpretada como venda zero. Não usa meses futuros
+    em relação à posição selecionada nem limita o histórico ao ano do filtro.
+    """
+    estoque = estoque_por_unidade(vendas, sell_out, ate)
+    s = sell_out.copy()
+    s["mes"] = pd.to_datetime(s["mes"]).dt.to_period("M")
+    s = s[s["mes"] <= pd.Period(ate, "M")]
+    s["unidade"] = s["unidade"].map(_chave_unidade)
+    mensal = s.groupby(["unidade", "mes"])[["refil_diant", "refil_tras"]].sum()
+    medias = mensal.groupby(level="unidade").mean()
+    meses = mensal.groupby(level="unidade").size()
+    linhas = []
+    for unidade, saldos in estoque.iterrows():
+        n = int(meses.get(unidade, 0))
+        for tipo, rotulo in (("diant", "Dianteiros (pares)"), ("tras", "Traseiros (un)")):
+            saldo = int(saldos[rotulo])
+            media = float(medias.loc[unidade, f"refil_{tipo}"]) if n else None
+            oferecer = n > 0 and media > 0 and saldo < media
+            situacao = ("Oferecer novo pedido" if oferecer else
+                        "Sem histórico" if not n else
+                        "Sem consumo registrado" if media == 0 else "Estoque suficiente")
+            if saldo < 0:
+                situacao += " · conferir saldo negativo"
+            linhas.append({
+                "Unidade": unidade, "Tipo": rotulo, "Estoque": saldo,
+                "Consumo médio/mês": media, "Meses com registro": n,
+                "Cobertura (meses)": saldo / media if n and media > 0 else None,
+                "Oferecer pedido": oferecer, "Situação": situacao,
+            })
+    return pd.DataFrame(linhas, columns=[
+        "Unidade", "Tipo", "Estoque", "Consumo médio/mês", "Meses com registro",
+        "Cobertura (meses)", "Oferecer pedido", "Situação",
+    ])

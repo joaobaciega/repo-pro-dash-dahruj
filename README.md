@@ -184,7 +184,23 @@ evolução mensal, verba associada ao estoque e alertas de conferência. A plani
 de estoque acompanha os filtros da tela. O saldo inicial carrega todo o histórico
 anterior ao mês, inclusive anos anteriores.
 
-Validação: `python -m unittest test_verbas test_paginas_verbas`.
+A seção **Oportunidades de reposição** calcula o consumo médio de cada unidade
+e tipo de refil usando todo o Sell Out até o mês selecionado, inclusive anos
+anteriores. Soma os consultores de cada loja/mês e divide o total vendido pelo
+número de meses com registros daquela loja. Meses registrados com zero entram;
+meses sem registros não são tratados como zero. O mês mais recente, possivelmente
+parcial, também entra. São usados os acumulados vigentes de `vw_base_tidy`, sem
+somar versões anteriores da trilha de alterações dos lançamentos.
+
+**Estoque < consumo médio mensal** indica oferecer um novo pedido. O teste é
+separado para dianteiros (pares) e traseiros (unidades), sem arredondar a média
+antes da comparação. Estoque igual à média não aciona o alerta. A tela mostra
+os meses usados, a cobertura em meses e as unidades que precisam de reposição.
+Sem histórico ou sem consumo, não gera sugestão automática. Saldo negativo
+mantém o aviso de conferência. O filtro de loja e o Excel incluem essa análise,
+que continua exclusiva da área restrita.
+
+Validação: `python -m unittest test_verbas test_paginas_verbas test_reposicao`.
 
 Para conferir com o Aiven sem alterar o banco:
 

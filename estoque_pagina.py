@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 import db
-from verbas import CATEGORIAS, calcular_verbas, movimentacao_por_unidade
+from verbas import CATEGORIAS, calcular_verbas, movimentacao_por_unidade, reposicao_por_unidade
 from verbas_pagina import MESES, dinheiro
 
 
@@ -19,12 +19,14 @@ COLUNAS_ESTOQUE = {
 }
 
 
-def exportar_estoque(movimento, historico, verba):
+def exportar_estoque(movimento, historico, verba, reposicao=None):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         movimento.rename(columns=COLUNAS_ESTOQUE).to_excel(writer, sheet_name="Estoque por unidade")
         historico.rename(columns=COLUNAS_ESTOQUE).to_excel(writer, sheet_name="Evolução mensal")
         verba.to_excel(writer, sheet_name="Verba em estoque", index=False)
+        if reposicao is not None:
+            reposicao.drop(columns="Oferecer pedido").to_excel(writer, sheet_name="Reposição", index=False)
         from openpyxl.styles import Font, PatternFill
         for ws in writer.book:
             ws.freeze_panes = "B2"
@@ -36,7 +38,8 @@ def exportar_estoque(movimento, historico, verba):
                 ws.column_dimensions[col[0].column_letter].width = 28
                 for cel in col[1:]:
                     if isinstance(cel.value, (int, float)):
-                        cel.number_format = 'R$ #,##0.00' if ws.title == "Verba em estoque" else "#,##0"
+                        cel.number_format = ('R$ #,##0.00' if ws.title == "Verba em estoque" else
+                                             "0.00" if col[0].value in ("Consumo médio/mês", "Cobertura (meses)") else "#,##0")
     return buf.getvalue()
 
 
@@ -81,6 +84,10 @@ def pagina_estoque():
     selecionadas = unidades or list(movimento.index)
     movimento = movimento.loc[selecionadas]
     totais = movimento.sum()
+    reposicao = reposicao_por_unidade(vendas, sell_out, mes)
+    reposicao = reposicao[reposicao["Unidade"].isin(selecionadas)]
+    alertas = reposicao[reposicao["Oferecer pedido"]]
+    unidades_repor = alertas["Unidade"].nunique()
 
     historico = pd.DataFrame([
         movimentacao_por_unidade(vendas, sell_out, m).reindex(selecionadas, fill_value=0).sum()
@@ -89,10 +96,11 @@ def pagina_estoque():
     historico.index.name = "Mês"
     divergencias = movimento[(movimento[["estoque_diant", "estoque_tras"]] < 0).any(axis=1)]
 
-    cards = st.columns(3)
+    cards = st.columns(4)
     cards[0].metric("Dianteiros em estoque (pares)", int(totais.estoque_diant))
     cards[1].metric("Traseiros em estoque (un)", int(totais.estoque_tras))
     cards[2].metric("Unidades com saldo negativo", len(divergencias))
+    cards[3].metric("Unidades para novo pedido", unidades_repor)
     if not divergencias.empty:
         st.warning("Há saídas superiores às entradas registradas. Confira estoque inicial, transferências e cobertura das bases nas unidades destacadas abaixo.")
         with st.expander("Unidades para conferência", expanded=True):
@@ -100,6 +108,21 @@ def pagina_estoque():
                          width="stretch")
     elif (historico[["estoque_diant", "estoque_tras"]] < 0).any().any():
         st.warning("O histórico do recorte contém saldo negativo. Confira as entradas e saídas nos meses anteriores.")
+
+    st.subheader("Oportunidades de reposição")
+    if unidades_repor:
+        st.info(f"Oferecer novo pedido a {unidades_repor} unidade(s): o estoque de pelo menos um tipo está abaixo do consumo médio mensal.")
+        st.dataframe(alertas.drop(columns="Oferecer pedido").style.format({
+            "Consumo médio/mês": "{:.2f}", "Cobertura (meses)": "{:.2f}",
+        }, na_rep="—"), hide_index=True, width="stretch")
+    else:
+        st.info("Nenhuma unidade com consumo registrado está abaixo da média mensal no recorte selecionado.")
+    st.caption("Consumo médio = vendas totais ao consumidor ÷ meses com registros da unidade, desde o início do histórico até a posição selecionada, incluindo anos anteriores. Meses registrados com zero entram na média; meses sem registros não entram. O mês mais recente pode estar parcial.")
+    with st.expander("Consumo médio de todas as unidades selecionadas"):
+        st.dataframe(reposicao.drop(columns="Oferecer pedido").style.format({
+            "Consumo médio/mês": "{:.2f}", "Cobertura (meses)": "{:.2f}",
+        }, na_rep="—"), hide_index=True, width="stretch")
+        st.caption("Cobertura = estoque ÷ consumo médio mensal. Menos de 1 mês indica reposição. Dianteiros e traseiros são avaliados separadamente; saldo negativo também exige conferência.")
 
     st.subheader("Movimentação por unidade")
     st.caption("Estoque inicial + entradas do mês − vendas do mês = saldo final. Dianteiros em pares; traseiros em unidades.")
@@ -142,6 +165,6 @@ def pagina_estoque():
             "Nissan Ceasa e Braz Leme são acompanhadas separadamente. Jeep Interlagos corresponde a Jeep W. Luiz."
         )
     st.download_button("Exportar acompanhamento de estoque (.xlsx)",
-                       exportar_estoque(movimento, hist_exibicao, verba),
+                       exportar_estoque(movimento, hist_exibicao, verba, reposicao),
                        file_name=f"estoque_{mes:%Y_%m}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
