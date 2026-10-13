@@ -17,10 +17,24 @@ Para testar a conexão isoladamente (fora do Streamlit), rode na pasta do projet
     python db.py
 """
 
+import re
+import unicodedata
+
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+
+
+def unidade_encerrada(nome):
+    texto = unicodedata.normalize("NFKD", str(nome)).encode("ascii", "ignore").decode()
+    chave = re.sub(r"[^A-Z0-9]", "", texto.upper())
+    return chave.endswith(("NISSANBRAZLEME", "NISSANBRASLEME", "NISSANBLEME"))
+
+
+def somente_unidades_ativas(df, coluna="unidade"):
+    """Oculta a unidade encerrada na apresentação, sem apagar o histórico SQL."""
+    return df.loc[~df[coluna].map(unidade_encerrada)].copy()
 
 
 def _build_url(cfg):
@@ -58,6 +72,8 @@ def listar_unidades():
         )).mappings().all()
     saida = []
     for r in rows:
+        if unidade_encerrada(r["nome_exibicao"]):
+            continue
         d = dict(r)
         d["preco_diant"] = float(d["preco_diant"])
         d["preco_tras"] = float(d["preco_tras"])
@@ -83,17 +99,17 @@ def listar_consultores(unidade_id):
 
 
 @st.cache_data(ttl=60)
-def ler_base_tidy():
+def ler_base_tidy(incluir_encerradas=False):
     """Base completa já calculada (a partir da view) para o dashboard."""
     eng = get_engine()
     with eng.connect() as conn:
         df = pd.read_sql(text("SELECT * FROM vw_base_tidy"), conn)
     df["mes"] = pd.to_datetime(df["mes"])
-    return df
+    return df if incluir_encerradas else somente_unidades_ativas(df)
 
 
 @st.cache_data(ttl=60)
-def ler_vendas_verbas():
+def ler_vendas_verbas(incluir_encerradas=False):
     """Base da aba Verbas: vendas por produto, com as três verbas por linha.
 
     Vem de `vendas_verbas`, alimentada por `importar_verbas.py` a partir do Excel
@@ -112,7 +128,7 @@ def ler_vendas_verbas():
               "verba_gerente", "total_gerente", "verba_reserva", "total_reserva"):
         df[c] = df[c].astype(float)
     df["qtde"] = df["qtde"].astype(int)
-    return df
+    return df if incluir_encerradas else somente_unidades_ativas(df, "cliente")
 
 
 @st.cache_data(ttl=60)
@@ -168,6 +184,7 @@ def ler_historico_lancamentos():
     eng = get_engine()
     with eng.connect() as conn:
         df = pd.read_sql(text("SELECT * FROM vw_lancamentos_historico"), conn)
+    df = somente_unidades_ativas(df)
     if df.empty:
         return df
     df["mes"] = pd.to_datetime(df["mes"])
