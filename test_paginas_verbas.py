@@ -58,10 +58,12 @@ code = source.read_text(encoding="utf-8")
 offset = code.index("# ============================ NAVEGAÇÃO")
 scope = {"__name__": "__main__", "__file__": str(source)}
 exec(compile(code[:offset], str(source), "exec"), scope)
-v = pd.DataFrame([entrada(), entrada(qtde=10, cliente="CLIENTE - NISSAN B.LEME")])
-s = pd.DataFrame([saida(), saida(diant=12, unidade="Nissan Braz Leme")])
-db.ler_vendas_verbas = lambda: v
-db.ler_base_tidy = lambda: s
+v = pd.DataFrame([entrada(), entrada(qtde=10, cliente="CLIENTE - JEEP CEASA"),
+                  entrada(qtde=0, cliente="CLIENTE - NISSAN B.LEME")])
+s = pd.DataFrame([saida(), saida(diant=12, unidade="Jeep Ceasa"),
+                  saida(diant=0, unidade="Nissan Braz Leme")])
+db.ler_vendas_verbas = lambda incluir_encerradas=False: v if incluir_encerradas else db.somente_unidades_ativas(v, "cliente")
+db.ler_base_tidy = lambda incluir_encerradas=False: s if incluir_encerradas else db.somente_unidades_ativas(s)
 db.ler_pagamentos_verba = lambda: {pd.Timestamp("2026-02-01"): {"consultor": True, "gerente": True}}
 db.ler_pagamentos_marketing = lambda: {}
 scope["pagina_dashboard"] = lambda: st.write("Dashboard")
@@ -115,7 +117,18 @@ class NavegacaoTest(unittest.TestCase):
         self.assertEqual(app.metric[0].value, "58")
         self.assertTrue(app.warning)
         self.assertEqual(app.metric[3].value, "1")
+        self.assertNotIn("NISSAN BRAZ LEME", app.multiselect[0].options)
+        for tabela in app.dataframe:
+            self.assertNotIn("BRAZ LEME", tabela.value.to_string().upper())
         self.assertTrue(any("Oferecer novo pedido" in i.value for i in app.info))
+        reposicao = next(t.value for t in app.dataframe if "Oferecer pedido de" in t.value.columns)
+        self.assertEqual(len(reposicao), 2)
+        self.assertIn("Saldo dianteiro (pares)", reposicao.columns)
+        self.assertIn("Saldo traseiro (un)", reposicao.columns)
+        resumo = next(t.value for t in app.dataframe if "Saldo Dianteiro" in t.value.columns)
+        self.assertEqual(list(resumo.columns), ["Saldo Dianteiro", "Saldo Traseiro"])
+        detalhes = next(e for e in app.expander if e.label == "Ver estoque inicial, entradas e saídas")
+        self.assertFalse(detalhes.proto.expanded)
         app.multiselect[0].set_value(["FIAT CEASA"]).run(timeout=20)
         self.assertFalse(app.exception)
         self.assertEqual(app.metric[0].value, "60")

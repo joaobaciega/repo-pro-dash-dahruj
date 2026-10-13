@@ -136,6 +136,14 @@ feita na mão fica pendente — aqui o COMMIT é explícito.
 
 ## Aba Verbas
 
+Unidade encerrada: Nissan Braz Leme é excluída das leituras operacionais, em
+qualquer período (Dashboard, rankings, Estoque, reposição, Histórico e opções
+de Lançamento). As exportações dessas telas usam a mesma base filtrada. O SQL
+permanece intacto. A tela Verbas continua incluindo os valores históricos nos
+totais financeiros, sem identificar unidades, para não cancelar provisões ou
+pagamentos passados. As leituras integrais são explícitas por meio do argumento
+`incluir_encerradas=True`; o padrão das leituras do app é somente lojas ativas.
+
 A aba cruza `vendas_verbas` (Sell In importado da planilha) com `vw_base_tidy`
 (Sell Out lançado por consultor no mesmo banco das outras abas). O importador
 continua gravando o Sell In integral; a conciliação é recalculada ao ler as bases.
@@ -199,6 +207,19 @@ os meses usados, a cobertura em meses e as unidades que precisam de reposição.
 Sem histórico ou sem consumo, não gera sugestão automática. Saldo negativo
 mantém o aviso de conferência. O filtro de loja e o Excel incluem essa análise,
 que continua exclusiva da área restrita.
+
+A tabela de reposição apresenta todas as unidades selecionadas em uma linha por
+loja, com saldo, consumo e duração de dianteiros/traseiros lado a lado. A coluna
+de pedido identifica o produto e o destaque colore apenas os produtos abaixo da
+média. O consumo exibido é arredondado para inteiro (meio para cima), mantendo a
+média original para os alertas e a duração. A duração usa meses de 30 dias e dias
+inteiros completos: `17d`, `1m e 12d`, `2m`. Sem consumo ou histórico, não estima
+uma duração; saldo negativo aparece como "Conferir saldo".
+
+Movimentação mostra apenas Saldo Dianteiro e Saldo Traseiro; o expansor abre os
+valores iniciais, entradas e saídas. No Excel, essas colunas ficam agrupadas e
+recolhidas. A planilha Reposição usa a mesma apresentação e os mesmos destaques
+da tela. O gráfico de evolução mantém sua apresentação e seus dados.
 
 Validação: `python -m unittest test_verbas test_paginas_verbas test_reposicao`.
 

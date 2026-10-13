@@ -1,6 +1,8 @@
 """Acompanhamento interno de estoque, protegido pelo acesso da aplicação."""
 
 import io
+import math
+from decimal import Decimal, ROUND_HALF_UP
 
 import pandas as pd
 import plotly.express as px
@@ -18,15 +20,73 @@ COLUNAS_ESTOQUE = {
     "saida_tras": "Saídas tras. (un)", "estoque_tras": "Saldo tras. (un)",
 }
 
+COLUNAS_REPOSICAO = ["Unidade", "Saldo dianteiro (pares)", "Consumo dianteiro/mês",
+                    "Duração dianteiros", "Saldo traseiro (un)", "Consumo traseiro/mês",
+                    "Duração traseiros", "Oferecer pedido de"]
+
+
+def duracao_estoque(cobertura):
+    """Meses de 30 dias, sem frações e sem arredondar a duração para cima."""
+    if pd.isna(cobertura):
+        return "—"
+    if cobertura < 0:
+        return "Conferir saldo"
+    dias = math.floor(cobertura * 30 + 1e-9)
+    if dias == 0 and cobertura > 0:
+        return "<1d"
+    if dias <= 30:
+        return f"{dias}d"
+    meses, resto = divmod(dias, 30)
+    return f"{meses}m e {resto}d" if resto else f"{meses}m"
+
+
+def tabela_reposicao(reposicao):
+    """Uma linha por loja, com os dois produtos lado a lado. Só apresentação."""
+    linhas = []
+    for unidade, grupo in reposicao.groupby("Unidade", sort=True):
+        linha = {"Unidade": unidade}
+        pedidos = []
+        for tipo, sufixo, saldo_col in (("Dianteiros (pares)", "dianteiro", "Saldo dianteiro (pares)"),
+                                       ("Traseiros (un)", "traseiro", "Saldo traseiro (un)")):
+            r = grupo[grupo["Tipo"] == tipo].iloc[0]
+            media = r["Consumo médio/mês"]
+            linha[saldo_col] = int(r["Estoque"])
+            linha[f"Consumo {sufixo}/mês"] = (None if pd.isna(media) else
+                int(Decimal(str(media)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+            duracao = duracao_estoque(r["Cobertura (meses)"])
+            if not r["Meses com registro"]:
+                duracao = "Sem histórico"
+            elif media == 0:
+                duracao = "Sem consumo"
+            if r["Estoque"] < 0:
+                duracao = "Conferir saldo"
+            linha[f"Duração {sufixo}s"] = duracao
+            if r["Oferecer pedido"]:
+                pedidos.append(sufixo + "s")
+        linha["Oferecer pedido de"] = " e ".join(pedidos).capitalize() if pedidos else "—"
+        linhas.append(linha)
+    return pd.DataFrame(linhas, columns=COLUNAS_REPOSICAO)
+
+
+def destacar_reposicao(linha):
+    destaque = "background-color: #713D13; color: #FFFFFF; font-weight: bold"
+    pedido = linha["Oferecer pedido de"].lower()
+    return [destaque if (c in ("Unidade", "Oferecer pedido de") and pedido != "—")
+            or ("dianteiro" in c.lower() and "dianteiros" in pedido)
+            or ("traseiro" in c.lower() and "traseiros" in pedido) else ""
+            for c in linha.index]
+
 
 def exportar_estoque(movimento, historico, verba, reposicao=None):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        movimento.rename(columns=COLUNAS_ESTOQUE).to_excel(writer, sheet_name="Estoque por unidade")
+        ordem = ["estoque_diant", "estoque_tras", "inicial_diant", "entrada_diant",
+                 "saida_diant", "inicial_tras", "entrada_tras", "saida_tras"]
+        movimento[ordem].rename(columns=COLUNAS_ESTOQUE).to_excel(writer, sheet_name="Estoque por unidade")
         historico.rename(columns=COLUNAS_ESTOQUE).to_excel(writer, sheet_name="Evolução mensal")
         verba.to_excel(writer, sheet_name="Verba em estoque", index=False)
         if reposicao is not None:
-            reposicao.drop(columns="Oferecer pedido").to_excel(writer, sheet_name="Reposição", index=False)
+            tabela_reposicao(reposicao).to_excel(writer, sheet_name="Reposição", index=False)
         from openpyxl.styles import Font, PatternFill
         for ws in writer.book:
             ws.freeze_panes = "B2"
@@ -38,8 +98,17 @@ def exportar_estoque(movimento, historico, verba, reposicao=None):
                 ws.column_dimensions[col[0].column_letter].width = 28
                 for cel in col[1:]:
                     if isinstance(cel.value, (int, float)):
-                        cel.number_format = ('R$ #,##0.00' if ws.title == "Verba em estoque" else
-                                             "0.00" if col[0].value in ("Consumo médio/mês", "Cobertura (meses)") else "#,##0")
+                        cel.number_format = 'R$ #,##0.00' if ws.title == "Verba em estoque" else "#,##0"
+        if reposicao is not None:
+            ws = writer.book["Reposição"]
+            for row in ws.iter_rows(min_row=2):
+                estilos = destacar_reposicao(pd.Series([c.value for c in row], index=COLUNAS_REPOSICAO))
+                for cel, estilo in zip(row, estilos):
+                    if estilo:
+                        cel.fill = PatternFill("solid", fgColor="713D13")
+                        cel.font = Font(bold=True, color="FFFFFF")
+        # O Excel também abre com os dois saldos; o sinal + revela os detalhes.
+        writer.book["Estoque por unidade"].column_dimensions.group("D", "I", hidden=True)
     return buf.getvalue()
 
 
@@ -112,24 +181,29 @@ def pagina_estoque():
     st.subheader("Oportunidades de reposição")
     if unidades_repor:
         st.info(f"Oferecer novo pedido a {unidades_repor} unidade(s): o estoque de pelo menos um tipo está abaixo do consumo médio mensal.")
-        st.dataframe(alertas.drop(columns="Oferecer pedido").style.format({
-            "Consumo médio/mês": "{:.2f}", "Cobertura (meses)": "{:.2f}",
-        }, na_rep="—"), hide_index=True, width="stretch")
     else:
         st.info("Nenhuma unidade com consumo registrado está abaixo da média mensal no recorte selecionado.")
-    st.caption("Consumo médio = vendas totais ao consumidor ÷ meses com registros da unidade, desde o início do histórico até a posição selecionada, incluindo anos anteriores. Meses registrados com zero entram na média; meses sem registros não entram. O mês mais recente pode estar parcial.")
-    with st.expander("Consumo médio de todas as unidades selecionadas"):
-        st.dataframe(reposicao.drop(columns="Oferecer pedido").style.format({
-            "Consumo médio/mês": "{:.2f}", "Cobertura (meses)": "{:.2f}",
-        }, na_rep="—"), hide_index=True, width="stretch")
-        st.caption("Cobertura = estoque ÷ consumo médio mensal. Menos de 1 mês indica reposição. Dianteiros e traseiros são avaliados separadamente; saldo negativo também exige conferência.")
+    reposicao_exibida = tabela_reposicao(reposicao)
+    numeros = {c: "{:.0f}" for c in COLUNAS_REPOSICAO if c.startswith(("Saldo", "Consumo"))}
+    st.dataframe(reposicao_exibida.style.apply(destacar_reposicao, axis=1).format(numeros, na_rep="—"),
+                 hide_index=True, width="stretch")
+    st.caption("Todas as unidades do filtro aparecem acima. O destaque indica qual produto oferecer: dianteiros, traseiros ou ambos. Dianteiros em pares; traseiros em unidades.")
+    st.caption("Duração estimada: d = dias; m = meses de 30 dias. Exemplo: 1m e 12d = 42 dias de estoque. O consumo mensal é exibido sem casas decimais; a duração e os alertas usam a média original.")
+    with st.expander("Como calculamos o consumo médio"):
+        st.caption("Vendas totais ao consumidor ÷ meses com registros da unidade, desde o início do histórico até a posição selecionada, incluindo anos anteriores. Meses registrados com zero entram na média; meses sem registros não entram. O mês mais recente pode estar parcial.")
 
     st.subheader("Movimentação por unidade")
-    st.caption("Estoque inicial + entradas do mês − vendas do mês = saldo final. Dianteiros em pares; traseiros em unidades.")
     exibicao = movimento.copy()
     exibicao.loc["TOTAL"] = totais
-    exibicao = exibicao.rename(columns=COLUNAS_ESTOQUE)
-    st.dataframe(exibicao.style.format("{:,.0f}"), width="stretch")
+    saldos = exibicao[["estoque_diant", "estoque_tras"]].rename(columns={
+        "estoque_diant": "Saldo Dianteiro", "estoque_tras": "Saldo Traseiro"})
+    st.dataframe(saldos.style.format("{:.0f}"), width="stretch")
+    st.caption("Dianteiros em pares; traseiros em unidades.")
+    with st.expander("Ver estoque inicial, entradas e saídas", expanded=False):
+        st.caption("Estoque inicial + entradas do mês − saídas do mês = saldo final.")
+        detalhes = exibicao[["inicial_diant", "entrada_diant", "saida_diant",
+                             "inicial_tras", "entrada_tras", "saida_tras"]].rename(columns=COLUNAS_ESTOQUE)
+        st.dataframe(detalhes.style.format("{:.0f}"), width="stretch")
 
     st.subheader("Evolução do estoque")
     grafico = historico[["estoque_diant", "estoque_tras"]].rename(columns={
@@ -162,7 +236,7 @@ def pagina_estoque():
             "O estoque acumula todo o histórico disponível, com saldo inicial zero no início das bases. "
             "O filtro de ano não reinicia o saldo. Entradas vêm do Sell In e saídas, do Sell Out.\n\n"
             "Saldos negativos são mantidos para identificar entradas faltantes ou transferências entre lojas. "
-            "Nissan Ceasa e Braz Leme são acompanhadas separadamente. Jeep Interlagos corresponde a Jeep W. Luiz."
+            "Jeep Interlagos corresponde a Jeep W. Luiz."
         )
     st.download_button("Exportar acompanhamento de estoque (.xlsx)",
                        exportar_estoque(movimento, hist_exibicao, verba, reposicao),

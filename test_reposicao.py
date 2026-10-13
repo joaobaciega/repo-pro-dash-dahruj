@@ -4,7 +4,7 @@ import unittest
 import pandas as pd
 from openpyxl import load_workbook
 
-from estoque_pagina import exportar_estoque
+from estoque_pagina import exportar_estoque, duracao_estoque, tabela_reposicao, destacar_reposicao
 from test_verbas import entrada, saida
 from verbas import movimentacao_por_unidade, reposicao_por_unidade
 
@@ -54,7 +54,7 @@ class ReposicaoTest(unittest.TestCase):
         self.assertEqual(nissan["Consumo médio/mês"], 6)
         self.assertTrue(nissan["Oferecer pedido"])
 
-    def test_exportacao_preserva_media_fracionaria_e_situacao(self):
+    def test_exportacao_exibe_media_inteira_sem_alterar_calculo(self):
         v = pd.DataFrame([entrada(qtde=15)])
         s = pd.DataFrame([saida("2026-01-01", diant=5), saida("2026-02-01", diant=6)])
         r = reposicao_por_unidade(v, s, "2026-02-01")
@@ -62,9 +62,39 @@ class ReposicaoTest(unittest.TestCase):
         wb = load_workbook(io.BytesIO(exportar_estoque(movimento, movimento, pd.DataFrame(), r)), data_only=True)
         ws = wb["Reposição"]
         cols = {c.value: c.column for c in ws[1]}
-        self.assertEqual(ws.cell(2, cols["Consumo médio/mês"]).value, 5.5)
-        self.assertEqual(ws.cell(2, cols["Consumo médio/mês"]).number_format, "0.00")
-        self.assertEqual(ws.cell(2, cols["Situação"]).value, "Oferecer novo pedido")
+        self.assertEqual(ws.cell(2, cols["Consumo dianteiro/mês"]).value, 6)
+        self.assertEqual(ws.cell(2, cols["Consumo dianteiro/mês"]).number_format, "#,##0")
+        self.assertEqual(ws.cell(2, cols["Oferecer pedido de"]).value, "Dianteiros")
+        self.assertEqual(ws.cell(2, cols["Duração dianteiros"]).value, "21d")
+        self.assertEqual(r.iloc[0]["Consumo médio/mês"], 5.5)
+        self.assertEqual(wb["Estoque por unidade"].cell(1, 2).value, "Saldo diant. (pares)")
+        self.assertTrue(wb["Estoque por unidade"].column_dimensions["D"].hidden)
+
+    def test_duracao_em_dias_e_meses(self):
+        for dias, esperado in [(0, "0d"), (0.5, "<1d"), (17.9, "17d"), (30, "30d"),
+                               (31, "1m e 1d"), (42, "1m e 12d"), (60, "2m"), (75, "2m e 15d")]:
+            with self.subTest(dias=dias):
+                self.assertEqual(duracao_estoque(dias / 30), esperado)
+        self.assertEqual(duracao_estoque(None), "—")
+        self.assertEqual(duracao_estoque(-1), "Conferir saldo")
+
+    def test_todas_unidades_ambos_produtos_e_destaques_independentes(self):
+        v = pd.DataFrame([entrada(qtde=100), entrada(qtde=15, tipo="tras"),
+                          entrada(qtde=10, cliente="CLIENTE - JEEP CEASA"),
+                          entrada(qtde=10, tipo="tras", cliente="CLIENTE - JEEP CEASA"),
+                          entrada(qtde=200, cliente="CLIENTE - HONDA CEASA")])
+        s = pd.DataFrame([saida(diant=50, tras=10), saida(diant=6, tras=6, unidade="Jeep Ceasa"),
+                          saida(diant=20, unidade="Honda Ceasa")])
+        t = tabela_reposicao(reposicao_por_unidade(v, s, "2026-02-01")).set_index("Unidade", drop=False)
+        self.assertEqual(len(t), 3)
+        self.assertEqual(t.loc["FIAT CEASA", "Oferecer pedido de"], "Traseiros")
+        self.assertEqual(t.loc["JEEP CEASA", "Oferecer pedido de"], "Dianteiros e traseiros")
+        self.assertEqual(t.loc["HONDA CEASA", "Oferecer pedido de"], "—")
+        cores = dict(zip(t.columns, destacar_reposicao(t.loc["FIAT CEASA"])))
+        self.assertTrue(cores["Saldo traseiro (un)"])
+        self.assertFalse(cores["Saldo dianteiro (pares)"])
+        self.assertEqual(t.loc["HONDA CEASA", "Duração dianteiros"], "9m")
+        self.assertEqual(t.loc["HONDA CEASA", "Duração traseiros"], "Sem consumo")
 
 
 if __name__ == "__main__":
