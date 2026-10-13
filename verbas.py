@@ -83,7 +83,18 @@ def _chave_unidade(nome):
     nome = nome.rsplit(" - ", 1)[-1]
     nome = re.sub(r"[^A-Z0-9]+", " ", nome).strip()
     return {"JEEP INTERLAGOS": "JEEP W LUIZ", "JEEP VL GUILHERME": "JEEP VILA GUILHERME",
-            "NISSAN B LEME": "NISSAN BRAZ LEME"}.get(nome, nome)
+            "NISSAN B LEME": "NISSAN BRAZ LEME",
+            "NISSAN BRAS LEME": "NISSAN BRAZ LEME"}.get(nome, nome)
+
+
+def _chave_estoque(nome):
+    """Consolidação de estoque autorizada: a unidade encerrada compõe Ceasa.
+
+    Aplica-se à apresentação de todo o histórico, não registra transferência
+    física nem altera vendas. A chave de consumo continua sendo a loja original.
+    """
+    unidade = _chave_unidade(nome)
+    return "NISSAN CEASA" if unidade == "NISSAN BRAZ LEME" else unidade
 
 
 def estoque_por_unidade(vendas, sell_out, ate):
@@ -92,8 +103,8 @@ def estoque_por_unidade(vendas, sell_out, ate):
     limite = pd.Timestamp(ate).to_period("M").end_time
     v = v[pd.to_datetime(v["data"]) <= limite]
     s = s[pd.to_datetime(s["mes"]) <= limite]
-    v["unidade"] = v["cliente"].map(_chave_unidade)
-    s["unidade"] = s["unidade"].map(_chave_unidade)
+    v["unidade"] = v["cliente"].map(_chave_estoque)
+    s["unidade"] = s["unidade"].map(_chave_estoque)
     unidades = sorted(set(v["unidade"]) | set(s["unidade"]))
     estoque = pd.DataFrame(index=pd.Index(unidades, name="Unidade"))
     for tipo, rotulo in (("diant", "Dianteiros (pares)"), ("tras", "Traseiros (un)")):
@@ -111,8 +122,8 @@ def movimentacao_por_unidade(vendas, sell_out, mes):
     v, s = vendas.copy(), sell_out.copy()
     v = v[pd.to_datetime(v["data"]).dt.to_period("M") == periodo]
     s = s[pd.to_datetime(s["mes"]).dt.to_period("M") == periodo]
-    v["unidade"] = v["cliente"].map(_chave_unidade)
-    s["unidade"] = s["unidade"].map(_chave_unidade)
+    v["unidade"] = v["cliente"].map(_chave_estoque)
+    s["unidade"] = s["unidade"].map(_chave_estoque)
     resultado = pd.DataFrame(index=atual.index)
     for tipo, rotulo in (("diant", "Dianteiros (pares)"), ("tras", "Traseiros (un)")):
         entrada = v[v["tipo_refil"] == tipo].groupby("unidade")["qtde"].sum()

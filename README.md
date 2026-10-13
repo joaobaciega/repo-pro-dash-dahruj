@@ -137,12 +137,21 @@ feita na mão fica pendente — aqui o COMMIT é explícito.
 ## Aba Verbas
 
 Unidade encerrada: Nissan Braz Leme é excluída das leituras operacionais, em
-qualquer período (Dashboard, rankings, Estoque, reposição, Histórico e opções
-de Lançamento). As exportações dessas telas usam a mesma base filtrada. O SQL
+qualquer período (Dashboard, rankings, Histórico e opções de Lançamento).
+No Estoque, o histórico da unidade encerrada é consolidado sob Nissan Ceasa,
+inclusive movimentações e exportações, sem exibir o nome antigo. O saldo da
+Ceasa incorpora +59 pares dianteiros e −2 traseiros conforme a conferência de
+13/10/2026 (posição: 226 pares e 68 traseiros). Esses números não são constantes:
+as entradas e saídas originais são somadas automaticamente, uma única vez.
+Trata-se de consolidação de apresentação para todo o histórico, não de um
+lançamento de transferência física com data presumida. O consumo médio para
+reposição continua usando apenas as vendas próprias da Ceasa.
+As exportações das demais telas usam a mesma base filtrada. O SQL
 permanece intacto. A tela Verbas continua incluindo os valores históricos nos
 totais financeiros, sem identificar unidades, para não cancelar provisões ou
 pagamentos passados. As leituras integrais são explícitas por meio do argumento
-`incluir_encerradas=True`; o padrão das leituras do app é somente lojas ativas.
+`incluir_encerradas=True` (Verbas e consolidação de Estoque); o padrão das demais
+leituras do app é somente lojas ativas.
 
 A aba cruza `vendas_verbas` (Sell In importado da planilha) com `vw_base_tidy`
 (Sell Out lançado por consultor no mesmo banco das outras abas). O importador

@@ -122,7 +122,7 @@ class NavegacaoTest(unittest.TestCase):
             self.assertNotIn("BRAZ LEME", tabela.value.to_string().upper())
         self.assertTrue(any("Oferecer novo pedido" in i.value for i in app.info))
         reposicao = next(t.value for t in app.dataframe if "Oferecer pedido de" in t.value.columns)
-        self.assertEqual(len(reposicao), 2)
+        self.assertEqual(len(reposicao), 3)
         self.assertIn("Saldo dianteiro (pares)", reposicao.columns)
         self.assertIn("Saldo traseiro (un)", reposicao.columns)
         resumo = next(t.value for t in app.dataframe if "Saldo Dianteiro" in t.value.columns)

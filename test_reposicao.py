@@ -45,11 +45,11 @@ class ReposicaoTest(unittest.TestCase):
         self.assertFalse(honda["Oferecer pedido"].any())
 
     def test_alias_e_inicio_individual_do_historico(self):
-        v = pd.DataFrame([entrada(qtde=100), entrada(qtde=10, cliente="CLIENTE - NISSAN B.LEME")])
+        v = pd.DataFrame([entrada(qtde=100), entrada(qtde=10, cliente="CLIENTE - JEEP INTERLAGOS")])
         s = pd.DataFrame([saida("2026-01-01", diant=20), saida("2026-02-01", diant=20),
-                          saida("2026-02-01", diant=6, unidade="Nissan Braz Leme")])
+                          saida("2026-02-01", diant=6, unidade="Jeep W. Luiz")])
         r = reposicao_por_unidade(v, s, "2026-02-01")
-        nissan = r[(r.Unidade == "NISSAN BRAZ LEME") & (r.Tipo == "Dianteiros (pares)")].iloc[0]
+        nissan = r[(r.Unidade == "JEEP W LUIZ") & (r.Tipo == "Dianteiros (pares)")].iloc[0]
         self.assertEqual(nissan["Meses com registro"], 1)
         self.assertEqual(nissan["Consumo médio/mês"], 6)
         self.assertTrue(nissan["Oferecer pedido"])

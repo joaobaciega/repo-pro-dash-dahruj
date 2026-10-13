@@ -70,14 +70,14 @@ class VerbasTest(unittest.TestCase):
         self.assertEqual(m.iloc[-1].estoque_diant, -10)
         self.assertEqual(m.iloc[-1].realizada_consultor, 1100)
 
-    def test_nissan_separada_e_alias_interlagos(self):
+    def test_nissan_consolidada_e_alias_interlagos(self):
         v = pd.DataFrame([entrada(qtde=190, cliente="CLIENTE - NISSAN B.LEME"),
                           entrada(qtde=940, cliente="CLIENTE - NISSAN CEASA"),
                           entrada(qtde=500, cliente="CLIENTE - JEEP INTERLAGOS")])
         s = pd.DataFrame([saida(diant=131, unidade="Nissan Braz Leme"),
                           saida(diant=773, unidade="Nissan Ceasa"), saida(diant=470, unidade="Jeep W. Luiz")])
         e = estoque_por_unidade(v, s, "2026-02-01")
-        self.assertEqual(e.iloc[:, 0].to_dict(), {"JEEP W LUIZ": 30, "NISSAN BRAZ LEME": 59, "NISSAN CEASA": 167})
+        self.assertEqual(e.iloc[:, 0].to_dict(), {"JEEP W LUIZ": 30, "NISSAN CEASA": 226})
 
     def test_falha_em_tipo_tarifa_ou_total_ambiguo(self):
         for invalido in [dict(tipo_refil=None), dict(verba_consultor=11), dict(total_consultor=999), dict(qtde=-1)]:
