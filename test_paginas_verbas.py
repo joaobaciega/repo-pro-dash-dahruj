@@ -95,19 +95,24 @@ class NavegacaoTest(unittest.TestCase):
             app.session_state["lanc_visto"] = time.monotonic()
         return app.run(timeout=20)
 
-    def test_publico_tem_tres_cards_sem_avisos_ou_estoque(self):
+    def test_publico_tem_tres_blocos_de_cards_sem_avisos_ou_estoque(self):
         app = self.app()
         self.assertFalse(app.exception)
-        self.assertEqual([m.label for m in app.metric], ["Verba gerada", "Verba paga", "Saldo de verbas"])
+        cats = ["Consultor", "Gerente", "Marketing"]
+        self.assertEqual([m.label for m in app.metric],
+                         cats + ["Total gerado"] + cats + ["Total pago"] + cats + ["SALDO TOTAL"])
+        self.assertEqual([s.value for s in app.subheader][:3],
+                         ["Verba gerada — 2026", "Verba já paga", "Saldo de verba"])
         self.assertFalse(app.warning)
         self.assertFalse(app.expander)
         self.assertNotIn("📦 Estoque", app.sidebar.radio[0].options)
         self.assertFalse(any("estoque" in str(df.value.columns).lower() for df in app.dataframe))
         app.selectbox[1].select("Fevereiro").run()
         self.assertFalse(app.exception)
-        self.assertEqual(app.metric[0].value, "R$ 0,00")
-        self.assertEqual(app.metric[1].value, "R$ 650,00")
-        self.assertEqual(app.metric[2].value, "R$ 945,00")
+        self.assertEqual(app.subheader[0].value, "Verba gerada — Fevereiro/2026")
+        self.assertEqual(app.metric[3].value, "R$ 0,00")     # Total gerado
+        self.assertEqual(app.metric[7].value, "R$ 650,00")   # Total pago
+        self.assertEqual(app.metric[11].value, "R$ 945,00")  # SALDO TOTAL
 
     def test_estoque_so_com_acesso_e_filtro_unidade(self):
         app = self.app(restrito=True)

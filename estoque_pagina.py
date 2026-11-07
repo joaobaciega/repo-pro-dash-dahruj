@@ -122,8 +122,10 @@ def pagina_estoque():
     st.title("📦 Estoque")
     st.caption("Acompanhamento interno · entradas, vendas e posição de estoque por unidade.")
     try:
-        vendas = db.ler_vendas_verbas()
-        sell_out = db.ler_base_tidy()
+        # O saldo da unidade encerrada precisa entrar na consolidação Ceasa.
+        # Os helpers de estoque consolidam o nome antes de filtros e exportações.
+        vendas = db.ler_vendas_verbas(incluir_encerradas=True)
+        sell_out = db.ler_base_tidy(incluir_encerradas=True)
         if vendas.empty or sell_out.empty:
             st.info("As bases de Sell In e Sell Out precisam estar preenchidas para acompanhar o estoque.")
             return

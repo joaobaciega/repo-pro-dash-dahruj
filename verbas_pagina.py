@@ -174,23 +174,31 @@ def pagina_verbas():
     soma, posicao = rec.sum(numeric_only=True), rec.iloc[-1]
     st.caption(f"Período: {periodo} · Valores em reais. O mês mais recente pode estar em andamento.")
 
+    # Três blocos de quatro cards (Consultor, Gerente, Marketing, Total).
+    st.subheader(f"Verba gerada — {periodo}")
+    # key= gera a classe .st-key-verba_gerada, usada no CSS do app.py para
+    # reduzir a fonte só desta linha (os valores aqui são os maiores da página).
     with st.container(key="verba_gerada"):
-        cards = st.columns(3)
-        cards[0].metric("Verba gerada", dinheiro(soma.gerada_total),
-                        help="Verba gerada pelas compras no período selecionado.")
-        cards[1].metric("Verba paga", dinheiro(soma.paga_total),
-                        help="Pagamentos de consultores, gerentes e marketing no período selecionado.")
-        cards[2].metric("Saldo de verbas", dinheiro(posicao.acumulado_total),
-                        help=f"Total gerado menos pagamentos até {fechamento}, incluindo os períodos anteriores. Não representa apenas valores já devidos para pagamento.")
-    st.caption(f"Gerado e pago referem-se ao período selecionado. O saldo considera todo o histórico até {fechamento}.")
+        cg = st.columns(4)
+        for i, cat in enumerate(CATEGORIAS):
+            cg[i].metric(cat.title(), dinheiro(soma[f"gerada_{cat}"]))
+        cg[3].metric("Total gerado", dinheiro(soma.gerada_total))
 
-    resumo = pd.DataFrame([
-        {"Categoria": cat.title(), "Gerado no período": soma[f"gerada_{cat}"],
-         "Pago no período": soma[f"paga_{cat}"], "Saldo de verbas": posicao[f"acumulado_{cat}"]}
-        for cat in CATEGORIAS
-    ])
-    st.dataframe(resumo.style.format({c: dinheiro for c in resumo.columns if c != "Categoria"}),
-                 width="stretch", hide_index=True)
+    st.subheader("Verba já paga")
+    cp = st.columns(4)
+    for i, cat in enumerate(CATEGORIAS):
+        cp[i].metric(cat.title(), dinheiro(soma[f"paga_{cat}"]),
+                     help="Valores utilizados nas ações de marketing realizadas no período."
+                     if cat == "marketing" else None)
+    cp[3].metric("Total pago", dinheiro(soma.paga_total))
+
+    st.subheader("Saldo de verba")
+    cs = st.columns(4)
+    for i, cat in enumerate(CATEGORIAS):
+        cs[i].metric(cat.title(), dinheiro(posicao[f"acumulado_{cat}"]))
+    cs[3].metric("SALDO TOTAL", dinheiro(posicao.acumulado_total))
+
+    st.caption(f"Gerado e pago referem-se ao período selecionado. O saldo considera todo o histórico até {fechamento}.")
     st.caption("Os pagamentos a consultores e gerentes consideram as vendas ao consumidor. Marketing considera os valores utilizados nas ações realizadas.")
 
     st.subheader(f"Verbas mês a mês — {ano}")
