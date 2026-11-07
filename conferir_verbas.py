@@ -14,6 +14,11 @@ from verbas import calcular_verbas, estoque_por_unidade
 from verbas_pagina import tabela_ano, exportar_excel
 
 
+def _ou_none(v):
+    """NULL do banco (None/NaN no pandas) = valor não informado."""
+    return None if v is None or pd.isna(v) else float(v)
+
+
 def ler_bases(destino):
     cfg = destinos(destino)[0][1]
     engine = create_engine(_url(cfg), connect_args={"connect_timeout": 15})
@@ -30,7 +35,9 @@ def ler_bases(destino):
         engine.dispose()
     vendas["data"] = pd.to_datetime(vendas["data"])
     sell_out["mes"] = pd.to_datetime(sell_out["mes"])
-    pagos = {pd.Timestamp(r.mes): {"consultor": bool(r.consultor_pago), "gerente": bool(r.gerente_pago)}
+    pagos = {pd.Timestamp(r.mes): {"consultor": bool(r.consultor_pago), "gerente": bool(r.gerente_pago),
+                                   "valor_consultor": _ou_none(r.valor_consultor),
+                                   "valor_gerente": _ou_none(r.valor_gerente)}
              for r in flags.itertuples()}
     mkt = {pd.Timestamp(r.mes): float(r.valor) for r in marketing.itertuples()}
     return vendas, sell_out, pagos, mkt
@@ -44,7 +51,7 @@ def main():
     v, s, pagos, mkt = ler_bases(args.destino)
     mensal = calcular_verbas(v, s, pagos, mkt)
     fim = mensal.index[-1]
-    args.saida.write_bytes(exportar_excel(tabela_ano(mensal, fim.year, pagos), estoque_por_unidade(v, s, fim)))
+    args.saida.write_bytes(exportar_excel(tabela_ano(mensal, fim.year), estoque_por_unidade(v, s, fim)))
     print(mensal[["paga_consultor", "paga_gerente", "paga_marketing", "estoque_total", "acumulado_total"]].to_string())
     print(f"Relatório: {args.saida.resolve()}")
 

@@ -9,12 +9,26 @@ import pandas as pd
 CATEGORIAS = {"consultor": "consultor", "gerente": "gerente", "marketing": "reserva"}
 
 
+def valor_pago(marcacao, cat, devido):
+    """Quanto se pagou de consultor/gerente num mês.
+
+    O valor informado na aba Pagamentos manda: é o que de fato saiu, e pode
+    diferir do devido pelo Sell Out (o Sell Out do mês continua sendo
+    retificado depois do pagamento). Sem valor informado, "Sim" paga o devido.
+    """
+    valor = marcacao.get(f"valor_{cat}")
+    if valor is not None:
+        return float(valor)
+    return float(devido) if marcacao.get(cat) else 0.0
+
+
 def calcular_verbas(vendas, sell_out, pagos, marketing_pagos):
     """Calcula todo o histórico antes de qualquer filtro de ano/mês.
 
     Sell In provisiona; Sell Out gera direito ao pagamento de consultor/gerente.
-    Flags de pagamento referem-se ao mês do Sell Out. Marketing mantém o caixa
-    provisionado no Sell In e desconta os valores efetivamente lançados.
+    Pagamentos referem-se ao mês do Sell Out: valem o valor informado ou, sem
+    ele, o devido do mês marcado como pago (ver `valor_pago`). Marketing mantém
+    o caixa provisionado no Sell In e desconta os valores efetivamente lançados.
     Estoque inicial = zero no início das bases; diferenças negativas são visíveis.
 
     O Sell Out só identifica dianteiro/traseiro, não SKU. Por isso as tarifas
@@ -66,7 +80,8 @@ def calcular_verbas(vendas, sell_out, pagos, marketing_pagos):
         if cat == "marketing":
             mensal[f"paga_{cat}"] = [float(marketing_pagos.get(m, 0)) for m in meses]
         else:
-            mensal[f"paga_{cat}"] = mensal[f"realizada_{cat}"] * [bool(pagos.get(m, {}).get(cat)) for m in meses]
+            mensal[f"paga_{cat}"] = [valor_pago(pagos.get(m, {}), cat, devido)
+                                     for m, devido in mensal[f"realizada_{cat}"].items()]
         mensal[f"estoque_{cat}"] = (mensal[f"gerada_{cat}"] - mensal[f"realizada_{cat}"]).cumsum()
         mensal[f"saldo_{cat}"] = mensal[f"gerada_{cat}"] - mensal[f"paga_{cat}"]
         mensal[f"acumulado_{cat}"] = mensal[f"saldo_{cat}"].cumsum()

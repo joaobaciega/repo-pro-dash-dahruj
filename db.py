@@ -133,18 +133,27 @@ def ler_vendas_verbas(incluir_encerradas=False):
 
 @st.cache_data(ttl=60)
 def ler_pagamentos_verba():
-    """Meses cuja verba já foi paga: {Timestamp(1º dia do mês): {consultor, gerente}}.
+    """Pagamentos de verba por mês: {Timestamp(1º dia do mês): {consultor,
+    gerente, valor_consultor, valor_gerente}}.
 
-    A marcação refere-se ao mês do Sell Out. Marketing usa pagamentos separados.
-    Mês ausente do dicionário = nada pago naquele mês.
+    A marcação refere-se ao mês do Sell Out. `valor_*` é o valor efetivamente
+    pago (None = não informado; aí vale o devido pelo Sell Out, se marcado).
+    Marketing usa pagamentos separados. Mês ausente = nada pago naquele mês.
     """
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(text(
-            "SELECT mes, consultor_pago, gerente_pago FROM verbas_pagamentos"
+            "SELECT mes, consultor_pago, gerente_pago, valor_consultor, valor_gerente "
+            "FROM verbas_pagamentos"
         )).mappings().all()
+
+    def _valor(v):
+        return None if v is None else float(v)
+
     return {pd.Timestamp(r["mes"]): {"consultor": bool(r["consultor_pago"]),
-                                     "gerente": bool(r["gerente_pago"])}
+                                     "gerente": bool(r["gerente_pago"]),
+                                     "valor_consultor": _valor(r["valor_consultor"]),
+                                     "valor_gerente": _valor(r["valor_gerente"])}
             for r in rows}
 
 

@@ -41,17 +41,23 @@ def dinheiro(valor):
     return (f"R$ {valor:,.2f}").replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def tabela_ano(mensal, ano, pagos):
+def _status_sell_out(r):
+    """Situação do mês pelos VALORES: pago abaixo do devido é "Parcial", mesmo
+    marcado como pago — a diferença continua em "A pagar"."""
+    if not (r.saida_diant or r.saida_tras):
+        return "Sem Sell Out"
+    cats = ("consultor", "gerente")
+    if all(r[f"paga_{c}"] >= r[f"realizada_{c}"] - 0.01 for c in cats):
+        return "Pago"
+    return "Parcial" if any(r[f"paga_{c}"] > 0 for c in cats) else "Em aberto"
+
+
+def tabela_ano(mensal, ano):
     """Fluxos são somados; estoque/saldo na linha total são posições finais."""
     rec = mensal[mensal.index.year == ano]
     tabela = rec[list(COLUNAS)].copy()
     tabela.index = [MESES[m.month] for m in rec.index]
-    tabela["status"] = [
-        "Sem Sell Out" if not (r.saida_diant or r.saida_tras) else
-        "Pago" if all(pagos.get(m, {}).get(c) for c in ("consultor", "gerente")) else
-        "Parcial" if any(pagos.get(m, {}).get(c) for c in ("consultor", "gerente")) else "Em aberto"
-        for m, r in rec.iterrows()
-    ]
+    tabela["status"] = [_status_sell_out(r) for _, r in rec.iterrows()]
     if not rec.empty:
         tabela.loc["TOTAL / POSIÇÃO FINAL"] = {
             **{c: rec[c].iloc[-1] if c in SALDOS else rec[c].sum() for c in COLUNAS}, "status": ""
@@ -66,13 +72,13 @@ def exportar_excel(tabela, estoque):
         estoque.to_excel(writer, sheet_name="Estoque por unidade")
         pd.DataFrame({"Metodologia": [
             "Sell In provisiona a verba. Sell Out gera o valor devido a consultores e gerentes.",
-            "Pago = valor devido pelo Sell Out do mês, apenas quando marcado como pago na planilha.",
+            "Pago = valor informado na aba Pagamentos da planilha; sem valor informado, o devido pelo Sell Out do mês marcado como pago.",
             "Estoque = Sell In acumulado menos Sell Out acumulado, desde o início das bases (estoque inicial zero).",
             "Marketing mantém a reserva do Sell In, descontando os pagamentos efetivamente lançados.",
             "Verba de marketing em estoque é informativa e já integra o saldo de marketing; não somar novamente.",
             "TOTAL / POSIÇÃO FINAL soma fluxos; estoques, valores pendentes e saldos acumulados usam a última posição.",
             "Tarifas por tipo vêm da base de Sell In. Divergências de tarifa impedem o cálculo automático.",
-            "Valores pagos a consultores/gerentes são calculados das marcações mensais, não de comprovantes bancários.",
+            "Meses sem valor informado têm o pago calculado da marcação mensal, não de comprovantes bancários.",
         ]}).to_excel(writer, sheet_name="Metodologia", index=False)
         from openpyxl.styles import Font, PatternFill
         for ws in writer.book:
@@ -143,8 +149,10 @@ def exportar_excel_cliente(tabela):
 def pagina_verbas():
     st.title("💰 Verbas")
     try:
-        vendas = db.ler_vendas_verbas()
-        sell_out = db.ler_base_tidy()
+        # O encerramento da loja não cancela provisões/pagamentos históricos.
+        # Esta tela mostra apenas totais, sem nomes de unidades.
+        vendas = db.ler_vendas_verbas(incluir_encerradas=True)
+        sell_out = db.ler_base_tidy(incluir_encerradas=True)
         pagos = db.ler_pagamentos_verba()
         mkt_pagos = db.ler_pagamentos_marketing()
         if vendas.empty or sell_out.empty:

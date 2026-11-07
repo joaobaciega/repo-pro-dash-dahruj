@@ -19,6 +19,9 @@ Abas lidas da planilha:
     Verbas      auxiliar: código do produto -> Unidade (Par = dianteiro,
                 Unitário = traseiro). Cabeçalho na LINHA 2.
     Pagamentos  auxiliar: quais meses já tiveram verba de consultor/gerente paga.
+                Colunas opcionais `Valor Consultor` / `Valor Gerente`: o valor
+                efetivamente pago no mês (só em mês marcado Sim). Vazio = paga o
+                devido pelo Sell Out daquele mês.
                 Se a aba não existir, o script preserva o que já está no banco e
                 avisa — nunca zera em silêncio.
     VERBAS DE MARKETING
@@ -35,8 +38,9 @@ Assim uma rodada só atualiza os dois ambientes. Sem secrets.toml, cai nas
 variáveis de ambiente DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME.
 
 Pré-requisito: as tabelas precisam existir — rode antes, uma única vez,
-`alteracoes no sql/add_verbas.sql` e `alteracoes no sql/add_verbas_marketing_pagos.sql`
-(ou o schema.sql completo, que já traz as três).
+`alteracoes no sql/add_verbas.sql`, `alteracoes no sql/add_verbas_marketing_pagos.sql`
+e `alteracoes no sql/add_verbas_pagamentos_valor.sql` (ou o schema.sql completo,
+que já traz tudo).
 
 Uso:
     python importar_verbas.py                          # xlsx padrão, todos os destinos
@@ -246,23 +250,53 @@ def ler_pagamentos(path):
     if faltando:
         raise SystemExit(
             f"A aba '{ABA_PAGAMENTOS}' não tem as colunas {sorted(faltando)}.\n"
-            "Layout esperado (cabeçalho na linha 1):\n"
-            "    Mês        | Consultor Pago | Gerente Pago\n"
-            "    01/01/2026 | Não            | Não"
+            "Layout esperado (cabeçalho na linha 1; as colunas de valor são opcionais):\n"
+            "    Mês        | Consultor Pago | Gerente Pago | Valor Consultor | Valor Gerente\n"
+            "    01/10/2026 | Sim            | Sim          | 10425           | 2606,25"
         )
 
     def flag(v):
         return 1 if _norm_texto(v) in VERDADEIROS or str(v).strip() in {"1", "1.0"} else 0
 
+    # Colunas opcionais com o valor efetivamente pago. Cabeçalho tolerante:
+    # 'Valor Consultor', 'Valor pago consultor' e 'VALOR CONSULTOR' valem igual.
+    def achar_coluna(categoria):
+        return next((c for c in df.columns
+                     if "VALOR" in _norm_texto(c) and categoria in _norm_texto(c)), None)
+    col_valor = {"consultor": achar_coluna("CONSULTOR"), "gerente": achar_coluna("GERENTE")}
+
     df["Mês"] = pd.to_datetime(df["Mês"], errors="coerce")
-    linhas = []
-    for _, r in df[df["Mês"].notna()].iterrows():
+    linhas, problemas = [], []
+    for i, r in df[df["Mês"].notna()].iterrows():
         # Normaliza para o 1º dia do mês: a planilha pode trazer qualquer dia.
-        linhas.append({
-            "mes": r["Mês"].date().replace(day=1),
-            "consultor_pago": flag(r["Consultor Pago"]),
-            "gerente_pago": flag(r["Gerente Pago"]),
-        })
+        linha = {"mes": r["Mês"].date().replace(day=1),
+                 "consultor_pago": flag(r["Consultor Pago"]),
+                 "gerente_pago": flag(r["Gerente Pago"]),
+                 "valor_consultor": None, "valor_gerente": None}
+        for cat, col in col_valor.items():
+            if col is None or _vazio(r[col]):
+                continue
+            valor = _valor_brl(r[col])
+            # Erro, não aviso: valor ilegível ou em mês marcado "Não" é
+            # ambíguo, e adivinhar mudaria o saldo de verba sem ninguém ver.
+            if valor is None or valor < 0:
+                problemas.append(f"    linha {i + 2}: {col}={r[col]!r} não é um valor válido")
+            elif not linha[f"{cat}_pago"] and valor == 0:
+                continue                      # "Não" com 0 é coerente: nada pago
+            elif not linha[f"{cat}_pago"]:
+                problemas.append(f"    linha {i + 2}: {col}={r[col]!r} com "
+                                 f"'{cat.title()} Pago' diferente de Sim")
+            else:
+                linha[f"valor_{cat}"] = round(valor, 2)
+        linhas.append(linha)
+
+    if problemas:
+        raise SystemExit(
+            f"A aba '{ABA_PAGAMENTOS}' tem linha(s) que não deu para ler — corrija e "
+            "rode de novo (nada foi gravado):\n" + "\n".join(problemas) +
+            "\nO valor pago só vale em mês marcado 'Sim' e aceita 10425, "
+            "10.425,00 ou R$ 10.425,00. Deixe vazio para usar o devido pelo Sell Out."
+        )
     return linhas
 
 
@@ -430,11 +464,14 @@ INSERT_VENDAS = text(
 )
 
 UPSERT_PAGAMENTOS = text("""
-    INSERT INTO verbas_pagamentos (mes, consultor_pago, gerente_pago)
-    VALUES (:mes, :consultor_pago, :gerente_pago)
+    INSERT INTO verbas_pagamentos
+        (mes, consultor_pago, gerente_pago, valor_consultor, valor_gerente)
+    VALUES (:mes, :consultor_pago, :gerente_pago, :valor_consultor, :valor_gerente)
     ON DUPLICATE KEY UPDATE
-        consultor_pago = VALUES(consultor_pago),
-        gerente_pago   = VALUES(gerente_pago)
+        consultor_pago  = VALUES(consultor_pago),
+        gerente_pago    = VALUES(gerente_pago),
+        valor_consultor = VALUES(valor_consultor),
+        valor_gerente   = VALUES(valor_gerente)
 """)
 
 
@@ -587,6 +624,12 @@ def main():
     else:
         marcados = sum(1 for p in pagamentos if p["consultor_pago"] or p["gerente_pago"])
         print(f"  {len(pagamentos)} mês(es) na aba '{ABA_PAGAMENTOS}', {marcados} com verba paga")
+        for p in pagamentos:
+            if p["valor_consultor"] is not None or p["valor_gerente"] is not None:
+                v_c, v_g = p["valor_consultor"], p["valor_gerente"]
+                print(f"    {p['mes']:%m/%Y}: valor pago informado — consultor "
+                      f"{_brl(v_c) if v_c is not None else 'devido pelo Sell Out'}, gerente "
+                      f"{_brl(v_g) if v_g is not None else 'devido pelo Sell Out'}")
 
     if mkt_pagos is None:
         print(f"  AVISO: aba '{ABA_MARKETING}' não encontrada — os pagamentos de "
@@ -610,6 +653,9 @@ def main():
             if "verbas_marketing_pagos" in str(e):
                 print("  A tabela de pagamentos de marketing ainda não existe neste "
                       "banco: rode 'alteracoes no sql/add_verbas_marketing_pagos.sql'.")
+            if "valor_consultor" in str(e) or "valor_gerente" in str(e):
+                print("  As colunas de valor pago ainda não existem neste banco: rode "
+                      "'alteracoes no sql/add_verbas_pagamentos_valor.sql'.")
             continue
         tudo_ok = conferir(eng, vendas, mkt_pagos) and tudo_ok
 

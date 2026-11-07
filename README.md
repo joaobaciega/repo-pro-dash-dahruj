@@ -29,6 +29,8 @@ App em Streamlit + MySQL:
 | `test_paginas_verbas.py` | Testes de navegação, proteção por senha e separação dos relatórios. |
 | `test_verbas.py` | Testes da metodologia e da exportação (`python -m unittest test_verbas`). |
 | `conferir_verbas.py` | Conferência somente leitura e geração de relatório Excel a partir do SQL. |
+| `.claude/skills/analise-lojas-dahruj/` | Skill que gera o PDF de desempenho por loja (`relatorios/analise_lojas_AAAA-MM.pdf`), somente leitura no banco online. |
+| `test_analise_lojas.py` | Testes do cálculo do PDF por loja (`python -m unittest test_analise_lojas`). |
 | `db.py`          | Camada de dados: conexão e funções de leitura/gravação.       |
 | `app.py`         | App integrado (Dashboard + Verbas + Relatórios + Lançamento). |
 | `aplicar_migracao_historico.py` | Cria a tabela/view do histórico nos bancos.    |
@@ -248,11 +250,13 @@ O dashboard continua usando a conexão `[mysql]` configurada em cada ambiente.
 mysql -u root -p dashboard_dahruj < "alteracoes no sql/add_verbas.sql"
 mysql -u root -p dashboard_dahruj < "alteracoes no sql/verbas_pagamentos_inicial.sql"
 mysql -u root -p dashboard_dahruj < "alteracoes no sql/add_verbas_marketing_pagos.sql"
+mysql -u root -p dashboard_dahruj < "alteracoes no sql/add_verbas_pagamentos_valor.sql"
 ```
 
 O segundo grava o estado inicial dos pagamentos (Fev–Jul/2026 pagos). Depois
 disso quem manda é a planilha. O terceiro cria a tabela dos pagamentos de
-marketing (nasce vazia).
+marketing (nasce vazia). O quarto acrescenta as colunas de valor pago de
+consultor/gerente.
 
 ### Rotina semanal (sexta-feira)
 
@@ -272,11 +276,21 @@ dashboard reflete a mudança em até 60s (TTL do cache de leitura).
 ### Fechar o pagamento de um mês
 
 Na aba **`Pagamentos`** da planilha (colunas `Mês` · `Consultor Pago` ·
-`Gerente Pago`), marque `Sim` no mês que foi pago e rode `importar_verbas.py`.
-A verba do **Sell Out daquele mês** sai do saldo. A verba dos itens ainda em
-estoque permanece provisionada. Os valores pagos são calculados com essas
-marcações, não lidos de comprovantes bancários; retificar o Sell Out de um mês
-marcado como pago também recalcula seu valor.
+`Gerente Pago` · `Valor Consultor` · `Valor Gerente`), marque `Sim` no mês que
+foi pago e rode `importar_verbas.py`. A verba do **Sell Out daquele mês** sai do
+saldo. A verba dos itens ainda em estoque permanece provisionada.
+
+- **Com valor informado** (`Valor Consultor` / `Valor Gerente`), o dashboard usa
+  esse valor como pago. Se ficar abaixo do devido pelo Sell Out, a diferença
+  continua em "A pagar" e o mês aparece como "Parcial" na conferência interna.
+  É o caminho para quando se sabe quanto saiu de fato (ex.: Out/2026, pago
+  R$ 10.425,00 / R$ 2.606,25).
+- **Sem valor informado**, o pago é calculado pela marcação: Sell Out do mês ×
+  tarifa. Retificar o Sell Out de um mês nessa situação recalcula o pago.
+- Valor só vale em mês marcado `Sim`; valor em mês `Não` trava a importação
+  (nada é gravado) para não esconder um erro de digitação.
+- As colunas de valor exigem `alteracoes no sql/add_verbas_pagamentos_valor.sql`
+  no banco (rode uma vez).
 
 - Marketing não entra nessa aba: ele tem a sua própria (veja abaixo), porque o
   que se paga é um **valor**, não um mês inteiro.

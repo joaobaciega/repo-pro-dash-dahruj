@@ -40,7 +40,7 @@ class VerbasTest(unittest.TestCase):
 
     def test_estoque_nao_reinicia_no_ano_e_total_nao_soma_posicoes(self):
         m = self.calcular(entradas=[entrada("2025-12-01")], saidas=[saida("2026-02-01"), saida("2026-03-01", 10)])
-        tabela = tabela_ano(m, 2026, {})
+        tabela = tabela_ano(m, 2026)
         self.assertEqual(m.loc["2026-01-01", "estoque_diant"], 100)
         self.assertEqual(tabela.iloc[-1][COLUNAS["estoque_diant"]], 50)
         self.assertEqual(tabela.iloc[-1][COLUNAS["saida_diant"]], 50)
@@ -65,6 +65,32 @@ class VerbasTest(unittest.TestCase):
         self.assertEqual(depois.iloc[-1].paga_total - antes.iloc[-1].paga_total, 125)
         self.assertEqual(depois.iloc[-1].estoque_diant, 50)
 
+    def test_valor_informado_prevalece_sobre_sell_out(self):
+        # Fevereiro: Sell Out de 40 pares = 400 consultor / 100 gerente devidos.
+        fev = pd.Timestamp("2026-02-01")
+        pagos = {fev: {"consultor": True, "gerente": True,
+                       "valor_consultor": 350.0, "valor_gerente": None}}
+        m = self.calcular(pagos=pagos)
+        self.assertEqual(m.loc[fev, "paga_consultor"], 350)
+        self.assertEqual(m.loc[fev, "paga_gerente"], 100)      # sem valor: devido
+        self.assertEqual(m.loc[fev, "a_pagar_consultor"], 50)
+        self.assertEqual(m.loc[fev, "acumulado_consultor"], 650)
+        # Retificar o Sell Out não mexe no que foi informado como pago.
+        depois = self.calcular(saidas=[saida(diant=50)], pagos=pagos)
+        self.assertEqual(depois.loc[fev, "paga_consultor"], 350)
+        self.assertEqual(depois.loc[fev, "paga_gerente"], 125)
+
+    def test_status_pelo_valor_pago(self):
+        fev = pd.Timestamp("2026-02-01")
+        casos = [({"consultor": True, "gerente": True}, "Pago"),
+                 ({"consultor": True, "gerente": True, "valor_consultor": 350.0}, "Parcial"),
+                 ({"consultor": True}, "Parcial"),
+                 ({}, "Em aberto")]
+        for marcacao, esperado in casos:
+            with self.subTest(marcacao=marcacao):
+                tabela = tabela_ano(self.calcular(pagos={fev: marcacao}), 2026)
+                self.assertEqual(tabela.loc["Fevereiro", "Status do Sell Out"], esperado)
+
     def test_diferencas_negativas_visiveis(self):
         m = self.calcular(saidas=[saida(diant=110)])
         self.assertEqual(m.iloc[-1].estoque_diant, -10)
@@ -86,7 +112,7 @@ class VerbasTest(unittest.TestCase):
 
     def test_exportacao_numerica_confere_com_tela(self):
         m = self.calcular()
-        tabela = tabela_ano(m, 2026, {})
+        tabela = tabela_ano(m, 2026)
         estoque = estoque_por_unidade(pd.DataFrame([entrada()]), pd.DataFrame([saida()]), "2026-02-01")
         wb = load_workbook(io.BytesIO(exportar_excel(tabela, estoque)), data_only=True)
         ws = wb["Verbas mensais"]
